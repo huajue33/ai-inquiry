@@ -1,0 +1,499 @@
+<template>
+  <div class="chat-layout">
+    <!-- 左侧边栏 -->
+    <aside :class="['sidebar', { collapsed: sidebarCollapsed }]">
+      <div class="sidebar-header">
+        <!-- 折叠状态：默认显示 logo，hover 侧边栏时显示展开按钮 -->
+        <div v-if="sidebarCollapsed" class="logo-collapsed" @click="sidebarCollapsed = false">
+          <img src="/favicon.svg" alt="logo" class="logo-img-collapsed" />
+          <el-icon class="expand-icon" :size="18"><Expand /></el-icon>
+        </div>
+        <!-- 展开状态：正常显示 logo + 文字 + 折叠按钮 -->
+        <template v-else>
+          <img src="/favicon.svg" alt="logo" class="logo-img-static" />
+          <span class="logo-text">AI 询价助手</span>
+          <el-button text circle class="collapse-btn" @click="sidebarCollapsed = true">
+            <el-icon :size="16"><Fold /></el-icon>
+          </el-button>
+        </template>
+      </div>
+      <div class="sidebar-action" v-show="!sidebarCollapsed">
+        <el-button type="primary" round class="new-chat-btn" @click="handleClear">
+          <el-icon><Plus /></el-icon>
+          <span>新建询价对话</span>
+        </el-button>
+      </div>
+      <div class="sidebar-action" v-show="sidebarCollapsed">
+        <el-tooltip content="新建对话" placement="right">
+          <el-button type="primary" circle size="small" @click="handleClear">
+            <el-icon><Plus /></el-icon>
+          </el-button>
+        </el-tooltip>
+      </div>
+      <div class="sidebar-history" v-show="!sidebarCollapsed">
+        <div class="history-label">最近记录</div>
+        <div class="history-list">
+          <div
+            v-for="conv in chatStore.conversations"
+            :key="conv.id"
+            :class="['history-item', { active: conv.id === chatStore.conversationId }]"
+            @click="chatStore.switchConversation(conv.id)"
+          >
+            <el-icon :size="14" :class="{ 'is-loading': chatStore.isConversationLoading(conv.id) }"><ChatDotRound /></el-icon>
+            <span class="history-title">{{ conv.title }}</span>
+            <el-button
+              text
+              circle
+              class="history-delete"
+              @click.stop="chatStore.removeConversation(conv.id)"
+            >
+              <el-icon :size="12"><Delete /></el-icon>
+            </el-button>
+          </div>
+          <div v-if="!chatStore.conversations.length" class="history-empty">
+            暂无对话记录
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- 右侧主区域 -->
+    <main class="main-area">
+      <header class="main-header">
+        <div class="header-title">
+          <el-icon :size="18"><ChatDotRound /></el-icon>
+          <span>{{ currentConversationTitle }}</span>
+        </div>
+        <div class="header-actions">
+          <el-button
+            v-if="currentUser.role === 'admin'"
+            text
+            class="admin-entry-btn"
+            @click="$router.push('/admin')"
+          >
+            <el-icon :size="14"><Setting /></el-icon>
+            <span>管理后台</span>
+          </el-button>
+          <el-dropdown trigger="click" @command="handleUserCommand">
+            <span class="user-dropdown">
+              <el-icon :size="16"><User /></el-icon>
+              <span class="user-name">{{ currentUser.real_name }}</span>
+              <el-icon :size="12"><ArrowDown /></el-icon>
+            </span>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item command="password">
+                  <el-icon><Lock /></el-icon>修改密码
+                </el-dropdown-item>
+                <el-dropdown-item command="logout" divided>
+                  <el-icon><SwitchButton /></el-icon>退出登录
+                </el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
+        </div>
+      </header>
+
+      <div class="chat-body">
+        <MessageList @quick="handleQuickQuestion" />
+      </div>
+
+      <div class="chat-footer">
+        <ChatInput ref="chatInputRef" />
+        <div class="footer-tip">AI 提供的价格信息仅供采销参考，请以实际报价为准。</div>
+      </div>
+    </main>
+
+    <!-- 修改密码弹窗 -->
+    <el-dialog v-model="passwordDialog" title="修改密码" width="400px" :close-on-click-modal="false">
+      <el-form label-width="80px">
+        <el-form-item label="原密码">
+          <el-input v-model="passwordForm.oldPassword" type="password" placeholder="请输入原密码" show-password />
+        </el-form-item>
+        <el-form-item label="新密码">
+          <el-input v-model="passwordForm.newPassword" type="password" placeholder="请输入新密码（至少6位）" show-password />
+        </el-form-item>
+        <el-form-item label="确认密码">
+          <el-input v-model="passwordForm.confirmPassword" type="password" placeholder="再次输入新密码" show-password />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="passwordDialog = false">取消</el-button>
+        <el-button type="primary" :loading="passwordLoading" @click="submitChangePassword">确认修改</el-button>
+      </template>
+    </el-dialog>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { ref, reactive, computed, onMounted } from "vue"
+import { useRouter } from "vue-router"
+import { Delete, Plus, ChatDotRound, Fold, Expand, User, ArrowDown, Lock, SwitchButton, Setting } from "@element-plus/icons-vue"
+import { ElMessage } from "element-plus"
+import { useChatStore } from "../stores/chat"
+import MessageList from "../components/chat/MessageList.vue"
+import ChatInput from "../components/chat/ChatInput.vue"
+import request from "../api/request"
+
+const router = useRouter()
+const chatStore = useChatStore()
+const chatInputRef = ref()
+const sidebarCollapsed = ref(false)
+
+const currentUser = reactive(
+  JSON.parse(localStorage.getItem("user") || '{"real_name":"用户","username":""}')
+)
+
+const currentConversationTitle = computed(() => {
+  const conv = chatStore.conversations.find(c => c.id === chatStore.conversationId)
+  return conv?.title || "新对话"
+})
+
+onMounted(() => {
+  chatStore.loadConversations()
+})
+
+function handleClear() {
+  chatStore.newConversation()
+}
+
+function handleUserCommand(command: string) {
+  if (command === "logout") {
+    localStorage.removeItem("token")
+    localStorage.removeItem("user")
+    router.push("/login")
+  } else if (command === "password") {
+    handleChangePassword()
+  }
+}
+
+async function handleChangePassword() {
+  passwordDialog.value = true
+}
+
+const passwordDialog = ref(false)
+const passwordForm = reactive({ oldPassword: "", newPassword: "", confirmPassword: "" })
+const passwordLoading = ref(false)
+
+async function submitChangePassword() {
+  if (!passwordForm.oldPassword) {
+    ElMessage.warning("请输入原密码")
+    return
+  }
+  if (passwordForm.newPassword.length < 6) {
+    ElMessage.warning("新密码至少6位")
+    return
+  }
+  if (passwordForm.newPassword !== passwordForm.confirmPassword) {
+    ElMessage.warning("两次输入的密码不一致")
+    return
+  }
+  passwordLoading.value = true
+  try {
+    await request.post("/auth/change-password", {
+      old_password: passwordForm.oldPassword,
+      new_password: passwordForm.newPassword,
+    })
+    ElMessage.success("密码修改成功，请重新登录")
+    passwordDialog.value = false
+    // 清除登录状态，跳转到登录页
+    localStorage.removeItem("token")
+    localStorage.removeItem("user")
+    router.push("/login")
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || "修改失败")
+  } finally {
+    passwordLoading.value = false
+  }
+}
+
+function handleQuickQuestion(q: string) {
+  if (chatInputRef.value?.sendFromOutside) {
+    chatInputRef.value.sendFromOutside(q)
+  }
+}
+</script>
+
+<style scoped>
+.chat-layout {
+  display: flex;
+  height: 100%;
+  overflow: hidden;
+  background: #f7f8fa;
+}
+
+/* ===== Sidebar ===== */
+.sidebar {
+  width: 240px;
+  background: #fff;
+  border-right: 1px solid #ebeef5;
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  transition: width 0.25s ease;
+  overflow: hidden;
+}
+
+.sidebar.collapsed {
+  width: 60px;
+}
+
+.sidebar-header {
+  padding: 16px 12px 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  white-space: nowrap;
+}
+
+.sidebar.collapsed .sidebar-header {
+  justify-content: center;
+}
+
+/* 折叠状态：hover 侧边栏显示展开按钮 */
+.logo-collapsed {
+  width: 32px;
+  height: 32px;
+  position: relative;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.logo-img-collapsed {
+  width: 28px;
+  height: 28px;
+  transition: opacity 0.2s;
+}
+
+.expand-icon {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  color: #409eff;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+.sidebar.collapsed:hover .logo-img-collapsed {
+  opacity: 0;
+}
+
+.sidebar.collapsed:hover .expand-icon {
+  opacity: 1;
+}
+
+/* 展开状态 */
+.logo-img-static {
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+}
+
+.logo-text {
+  font-size: 15px;
+  font-weight: 600;
+  color: #1a1a1a;
+  flex: 1;
+}
+
+.collapse-btn {
+  color: #909399;
+}
+
+.collapse-btn:hover {
+  color: #409eff;
+}
+
+.sidebar-action {
+  padding: 0 12px 16px;
+  display: flex;
+  justify-content: center;
+}
+
+.new-chat-btn {
+  width: 100%;
+  height: 38px;
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.sidebar-history {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0 12px;
+}
+
+.history-label {
+  font-size: 11px;
+  color: #a8abb2;
+  padding: 8px 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.history-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-size: 13px;
+  color: #606266;
+  cursor: pointer;
+  transition: background 0.2s;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.history-item:hover {
+  background: #f5f7fa;
+}
+
+.history-item.active {
+  background: #ecf5ff;
+  color: #409eff;
+}
+
+.history-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.history-delete {
+  opacity: 0;
+  transition: opacity 0.2s;
+  width: 20px;
+  height: 20px;
+  color: #c0c4cc;
+}
+
+.history-item:hover .history-delete {
+  opacity: 1;
+}
+
+.history-delete:hover {
+  color: #f56c6c;
+}
+
+.history-empty {
+  font-size: 12px;
+  color: #c0c4cc;
+  text-align: center;
+  padding: 20px 0;
+}
+
+/* ===== Main Area ===== */
+.main-area {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.main-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 24px;
+  background: #fff;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.header-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 15px;
+  font-weight: 500;
+  color: #303133;
+}
+
+.header-btn {
+  color: #909399;
+}
+
+.header-btn:hover {
+  color: #f56c6c;
+}
+
+.user-dropdown {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  padding: 6px 10px;
+  border-radius: 6px;
+  transition: background 0.2s;
+  font-size: 13px;
+  color: #606266;
+}
+
+.admin-entry-btn {
+  font-size: 13px;
+  color: #606266;
+  margin-right: 8px;
+}
+
+.admin-entry-btn:hover {
+  color: #409eff;
+}
+
+.user-dropdown:hover {
+  background: #f5f7fa;
+}
+
+.user-name {
+  max-width: 80px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 24px 24px;
+}
+
+.chat-body::-webkit-scrollbar {
+  width: 5px;
+}
+
+.chat-body::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.chat-body::-webkit-scrollbar-thumb {
+  background: #e4e7ed;
+  border-radius: 3px;
+}
+
+.chat-body::-webkit-scrollbar-thumb:hover {
+  background: #c0c4cc;
+}
+
+.chat-footer {
+  padding: 12px 12px 16px;
+  background: #fff;
+  border-top: 1px solid #f0f0f0;
+}
+
+.footer-tip {
+  text-align: center;
+  font-size: 11px;
+  color: #c0c4cc;
+  margin-top: 10px;
+}
+</style>

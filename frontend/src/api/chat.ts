@@ -1,0 +1,115 @@
+import request from "./request"
+import type { ChatResponse } from "../types/card"
+
+/**
+ * 非流式发送消息（兼容）
+ */
+export function sendMessage(message: string, conversationId?: string): Promise<ChatResponse> {
+  return request.post("/chat", {
+    message,
+    conversation_id: conversationId,
+  })
+}
+
+/**
+ * 流式发送消息（SSE），支持思考模式和中断
+ */
+export async function sendMessageStream(
+  message: string,
+  conversationId: string | undefined,
+  enableThinking: boolean,
+  callbacks: {
+    onToken: (token: string) => void
+    onThinkingToken?: (token: string) => void
+    onToolStart?: (toolName: string) => void
+    onToolEnd?: (toolName: string) => void
+    onDone: (data: { suggestions: string[]; cards: any[]; conversation_id: string; usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number } }) => void
+    onError: (error: string) => void
+  },
+  abortSignal?: AbortSignal
+): Promise<void> {
+  const token = localStorage.getItem("token")
+
+  const response = await fetch("/api/chat/stream", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify({
+      message,
+      conversation_id: conversationId,
+      enable_thinking: enableThinking,
+    }),
+    signal: abortSignal,
+  })
+
+  if (!response.ok) {
+    callbacks.onError(`请求失败: ${response.status}`)
+    return
+  }
+
+  const reader = response.body?.getReader()
+  if (!reader) {
+    callbacks.onError("无法读取响应流")
+    return
+  }
+
+  const decoder = new TextDecoder()
+  let buffer = ""
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+
+      buffer += decoder.decode(value, { stream: true })
+
+      const lines = buffer.split("\n")
+      buffer = lines.pop() || ""
+
+      for (const line of lines) {
+        const trimmed = line.trim()
+        if (!trimmed || !trimmed.startsWith("data: ")) continue
+
+        const jsonStr = trimmed.slice(6)
+        try {
+          const event = JSON.parse(jsonStr)
+
+          switch (event.event) {
+            case "token":
+              callbacks.onToken(event.data)
+              break
+            case "thinking_token":
+              callbacks.onThinkingToken?.(event.data)
+              break
+            case "tool_start":
+              callbacks.onToolStart?.(event.data)
+              break
+            case "tool_end":
+              callbacks.onToolEnd?.(event.data)
+              break
+            case "done":
+              callbacks.onDone(event.data)
+              break
+            case "error":
+              callbacks.onError(event.data)
+              break
+            case "thinking":
+              break
+          }
+        } catch {
+          // 忽略解析错误
+        }
+      }
+    }
+  } catch (e: any) {
+    if (e.name === "AbortError") {
+      // 用户主动中断，不报错
+      return
+    }
+    throw e
+  } finally {
+    reader.releaseLock()
+  }
+}
