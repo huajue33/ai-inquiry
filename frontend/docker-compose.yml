@@ -1,0 +1,17 @@
+# ============================================================
+# 前端栈：Nginx + Vue 静态资源
+# 部署在 Web 服务器，独立于后端
+# ============================================================
+services:
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: quotation-frontend:latest
+    container_name: quotation-frontend
+    restart: unless-stopped
+    environment:
+      # 后端 API 地址，由 nginx 启动时通过 envsubst 注入到 default.conf
+      BACKEND_URL: ${BACKEND_URL}
+    ports:
+      - "${WEB_PORT:-80}:80"

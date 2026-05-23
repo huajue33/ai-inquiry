@@ -1,17 +1,95 @@
-version: "3.8"
-
+# ============================================================
+# 后端栈：MySQL + Meilisearch + FastAPI Backend
+# 部署在 API 服务器。前端独立部署，见 frontend/docker-compose.yml
+# ============================================================
 services:
+  mysql:
+    image: mysql:8.0
+    container_name: quotation-mysql
+    restart: unless-stopped
+    command:
+      - --default-authentication-plugin=mysql_native_password
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD}
+      MYSQL_DATABASE: ${DB_NAME}
+      TZ: Asia/Shanghai
+    ports:
+      # 仅本机调试用，生产建议注释掉
+      - "127.0.0.1:${DB_PORT:-3306}:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      # 容器首次启动且 mysql_data 为空时，自动执行此目录下的 .sql / .sh
+      - ./mysql/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${DB_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - quotation-net
+
   meilisearch:
     image: getmeili/meilisearch:v1.11
-    container_name: meili
-    ports:
-      - "7700:7700"
+    container_name: quotation-meili
+    restart: unless-stopped
     environment:
-      - MEILI_MASTER_KEY=your-master-key-change-me
-      - MEILI_ENV=development
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY}
+      MEILI_ENV: ${MEILI_ENV:-production}
+    ports:
+      # 仅本机调试用，生产建议注释掉
+      - "127.0.0.1:7700:7700"
     volumes:
       - meili_data:/meili_data
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:7700/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - quotation-net
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: quotation-backend:latest
+    container_name: quotation-backend
     restart: unless-stopped
+    environment:
+      DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY}
+      DASHSCOPE_BASE_URL: ${DASHSCOPE_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
+      DASHSCOPE_MODEL: ${DASHSCOPE_MODEL:-qwen3.5-plus}
+      DASHSCOPE_LITE_MODEL: ${DASHSCOPE_LITE_MODEL:-qwen-turbo}
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_USER: root
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_NAME: ${DB_NAME}
+      MEILI_URL: http://meilisearch:7700
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY}
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
+      JWT_EXPIRE_MINUTES: ${JWT_EXPIRE_MINUTES:-1440}
+      # CORS 白名单（多个用英文逗号分隔，例：https://web.example.com,https://admin.example.com）
+      CORS_ORIGINS: ${CORS_ORIGINS:-*}
+    depends_on:
+      mysql:
+        condition: service_healthy
+      meilisearch:
+        condition: service_healthy
+    ports:
+      # 暴露给前端服务器或公网（建议前面再加一层 nginx + HTTPS）
+      - "${BACKEND_PORT:-8000}:8000"
+    networks:
+      - quotation-net
 
 volumes:
+  mysql_data:
   meili_data:
+
+networks:
+  quotation-net:
+    driver: bridge
