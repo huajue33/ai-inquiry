@@ -123,7 +123,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, nextTick, watch, computed, onUnmounted } from "vue"
+import { ref, reactive, nextTick, watch, onUnmounted } from "vue"
 import MarkdownIt from "markdown-it"
 import { Loading, MagicStick, Select, TrendCharts, Search, DataAnalysis } from "@element-plus/icons-vue"
 import { useChatStore } from "../../stores/chat"

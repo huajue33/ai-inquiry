@@ -58,13 +58,6 @@ const TOOL_NAMES: Record<string, string> = {
   "分析问题": "分析问题并查询数据",
 }
 
-const quickQuestions = [
-  "今日蔬菜涨价排行",
-  "土豆最新价格",
-  "对比不同品牌线茄",
-  "叶菜类有哪些",
-]
-
 function handleStop() {
   if (abortController) {
     abortController.abort()

@@ -1,9 +1,8 @@
 import { defineStore } from "pinia"
 import { ref, reactive, computed } from "vue"
-import type { ChatMessage, ToolCall } from "../types/card"
+import type { ChatMessage } from "../types/card"
 import {
   getConversations,
-  createConversation,
   getConversation,
   deleteConversation,
   saveMessage,
