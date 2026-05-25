@@ -192,6 +192,7 @@ def get_price_ranking(db: Session, direction: str = "rise", category_ids: list[i
 
     query = (
         db.query(
+            Product.product_id,
             Product.product_name,
             prev_prices.c.prev_price,
             latest_prices.c.latest_price,
@@ -216,9 +217,9 @@ def get_price_ranking(db: Session, direction: str = "rise", category_ids: list[i
     rows = query.limit(limit).all()
 
     results = []
-    for name, prev, latest in rows:
+    for pid, name, prev, latest in rows:
         change_pct = (float(latest) - float(prev)) / float(prev) * 100
-        results.append((name, prev, latest, change_pct))
+        results.append((pid, name, prev, latest, change_pct))
     return results
 
 

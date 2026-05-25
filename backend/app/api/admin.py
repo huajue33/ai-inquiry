@@ -13,7 +13,7 @@ from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-from sqlalchemy import func, desc
+from sqlalchemy import func, desc, or_, and_
 
 from app.database import get_db
 from app.models.user import User
@@ -209,7 +209,11 @@ async def list_products(
 ):
     query = db.query(Product)
     if keyword:
-        query = query.filter(Product.product_name.like(f"%{keyword}%"))
+        # 纯数字按 product_id 精确查找
+        if keyword.strip().isdigit():
+            query = query.filter(Product.product_id == int(keyword.strip()))
+        else:
+            query = query.filter(Product.product_name.like(f"%{keyword}%"))
     if category_id:
         query = query.filter(Product.category_id == category_id)
 
@@ -234,7 +238,6 @@ async def list_products(
     product_ids = [p.product_id for p in products]
     latest_prices = {}
     if product_ids:
-        from sqlalchemy import and_
         latest_date_sub = (
             db.query(Price.product_id, func.max(Price.price_date).label("max_date"))
             .filter(Price.product_id.in_(product_ids))
@@ -330,12 +333,13 @@ async def list_categories(
 @router.get("/conversations")
 async def list_all_conversations(
     user_id: Optional[int] = None,
+    keyword: str = "",
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     user: User = Depends(require_authed),
     db: Session = Depends(get_db),
 ):
-    """admin 可看全部，可按 user_id 过滤；manager / buyer 仅自己的"""
+    """admin 可看全部，可按 user_id / keyword 过滤；manager / buyer 仅自己的"""
     query = db.query(Conversation)
 
     if user.role == "admin":
@@ -344,6 +348,29 @@ async def list_all_conversations(
     else:
         # manager / buyer 强制只看自己
         query = query.filter(Conversation.user_id == user.id)
+
+    # 关键词搜索：匹配标题或消息内容
+    if keyword.strip():
+        kw = f"%{keyword.strip()}%"
+        # 先找标题匹配的对话 ID
+        title_ids = (
+            db.query(Conversation.id)
+            .filter(Conversation.title.like(kw))
+            .subquery()
+        )
+        # 再找消息内容匹配的对话 ID
+        content_ids = (
+            db.query(ChatMessage.conversation_id)
+            .filter(ChatMessage.content.like(kw))
+            .distinct()
+            .subquery()
+        )
+        query = query.filter(
+            or_(
+                Conversation.id.in_(title_ids),
+                Conversation.id.in_(content_ids),
+            )
+        )
 
     total = query.count()
     convs = (

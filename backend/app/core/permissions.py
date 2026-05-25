@@ -41,11 +41,11 @@ def require_authed(user: User = Depends(get_current_user)) -> User:
 
 def get_allowed_category_ids(db: Session, user: User) -> Optional[List[int]]:
     """
-    返回用户允许查询的"三级分类 ID 列表"。
+    返回用户允许查询的分类 ID 列表（包含被授权的二级 + 展开后的三级）。
 
     - admin / manager → 返回 None（无限制）
     - buyer 没有任何授权 → 返回 []（查询应当返回空）
-    - buyer 有授权 → 把二级分类展开到三级叶子并返回
+    - buyer 有授权 → 返回二级 ID + 三级叶子 ID（兼容产品关联任意层级）
     """
     if user.role in ("admin", "manager"):
         return None
@@ -68,10 +68,8 @@ def get_allowed_category_ids(db: Session, user: User) -> Optional[List[int]]:
     )
     leaf_ids = [c.id for c in third_level]
 
-    # 兼容：如果授权的本身就是三级或一级，直接用授权 + 展开结果
-    if not leaf_ids:
-        return list(second_level_ids)
-    return leaf_ids
+    # 返回二级 + 三级，确保无论产品关联哪一级、工具传哪一级都能匹配
+    return list(set(second_level_ids + leaf_ids))
 
 
 def intersect_category_ids(
@@ -83,7 +81,7 @@ def intersect_category_ids(
     - allowed=None  无限制 → 返回 requested 原样
     - allowed=[]    无权限 → 返回 [] （触发 "无权限" 提示）
     - requested=None 没指定 → 返回 allowed
-    - 都有 → 求交集；交集为空也返回 []
+    - 都有 → 求交集；如果直接交集为空，尝试展开 requested 的子分类再交
     """
     if allowed is None:
         return requested
@@ -91,8 +89,28 @@ def intersect_category_ids(
         return []
     if not requested:
         return allowed
-    inter = list(set(allowed) & set(requested))
-    return inter  # 空列表会触发无权限提示
+
+    allowed_set = set(allowed)
+    inter = list(allowed_set & set(requested))
+
+    # 如果直接交集为空，可能是 requested 传的是二级分类而 allowed 包含其三级子分类
+    # 此时返回 allowed 中属于 requested 子树的那些 ID
+    if not inter:
+        from app.database import SessionLocal
+        db = SessionLocal()
+        try:
+            # 查找 requested 的子分类
+            children = (
+                db.query(Category.id)
+                .filter(Category.parent_id.in_(requested))
+                .all()
+            )
+            child_ids = set(c[0] for c in children)
+            inter = list(allowed_set & child_ids)
+        finally:
+            db.close()
+
+    return inter
 
 
 # ===== 3. ContextVar：把当前用户注入到 LangChain tool =====

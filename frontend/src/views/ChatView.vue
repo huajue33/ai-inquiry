@@ -200,6 +200,7 @@ function handleClear() {
 function handleUserCommand(command: string) {
   if (command === "logout") {
     localStorage.removeItem("token")
+    localStorage.removeItem("refresh_token")
     localStorage.removeItem("user")
     router.push("/login")
   } else if (command === "password") {
@@ -238,6 +239,7 @@ async function submitChangePassword() {
     passwordDialog.value = false
     // 清除登录状态，跳转到登录页
     localStorage.removeItem("token")
+    localStorage.removeItem("refresh_token")
     localStorage.removeItem("user")
     router.push("/login")
   } catch (e: any) {

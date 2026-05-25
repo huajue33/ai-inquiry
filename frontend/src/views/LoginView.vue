@@ -90,6 +90,7 @@ async function handleLogin() {
       password: password.value,
     })
     localStorage.setItem("token", res.access_token)
+    localStorage.setItem("refresh_token", res.refresh_token)
     localStorage.setItem("user", JSON.stringify({
       user_id: res.user_id,
       username: res.username,

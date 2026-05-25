@@ -104,7 +104,7 @@ def query_latest_price(product_name: str, brand: str = "", category: str = "", q
         for r in results:
             brand_str = f"[{r['brand']}]" if r["brand"] else ""
             quality_str = f"({r['quality']})" if r["quality"] else ""
-            lines.append(f"{brand_str}{r['product_name']}{quality_str} - {r['price']}元/{r['unit']}（{r['date']}）")
+            lines.append(f"{brand_str}{r['product_name']}{quality_str}{{#id={r['product_id']}}} - {r['price']}元/{r['unit']}（{r['date']}）")
         if len(products) > 10:
             lines.append(f"\n如需查看更多，请提供更具体的品牌或规格信息。")
         return "\n".join(lines)
@@ -132,7 +132,7 @@ def query_price_trend(product_name: str, days: int = 7) -> str:
         if not trend_data:
             return f"'{product.product_name}'暂无近{days}天的价格数据。"
 
-        lines = [f"'{product.product_name}' 近{days}天价格走势："]
+        lines = [f"'{product.product_name}'{{#id={product.product_id}}} 近{days}天价格走势："]
         for item in trend_data:
             fill_mark = "（填充）" if item["is_filled"] else ""
             lines.append(f"  {item['price_date']} - {float(item['price_value'])}元/{item['price_unit']}{fill_mark}")
@@ -186,9 +186,9 @@ def query_price_ranking(direction: str = "rise", category: str = "", limit: int 
 
         direction_text = "涨幅" if direction == "rise" else "跌幅"
         lines = [f"{direction_text}排行TOP{limit}："]
-        for name, prev, latest, change_pct in results:
+        for pid, name, prev, latest, change_pct in results:
             arrow = "↑" if change_pct > 0 else "↓"
-            lines.append(f"  {name} | {float(prev):.2f}→{float(latest):.2f} | {arrow}{abs(change_pct):.1f}%")
+            lines.append(f"  {name}{{#id={pid}}} | {float(prev):.2f}→{float(latest):.2f} | {arrow}{abs(change_pct):.1f}%")
 
         return "\n".join(lines)
     finally:
@@ -211,6 +211,7 @@ def compare_products(product_names: list[str], compare_type: str = "brand") -> s
                 price = get_latest_price(db, p.product_id)
                 if price:
                     all_results.append({
+                        "product_id": p.product_id,
                         "name": p.product_name,
                         "brand": p.brand,
                         "quality": p.quality,
@@ -226,7 +227,7 @@ def compare_products(product_names: list[str], compare_type: str = "brand") -> s
         for r in sorted_results:
             brand_str = f"[{r['brand']}]" if r["brand"] else ""
             quality_str = f"({r['quality']})" if r["quality"] else ""
-            lines.append(f"  {brand_str}{r['name']}{quality_str} - {r['price']}元/{r['unit']}")
+            lines.append(f"  {brand_str}{r['name']}{quality_str}{{#id={r['product_id']}}} - {r['price']}元/{r['unit']}")
 
         if len(sorted_results) >= 2:
             cheapest = sorted_results[0]
@@ -259,7 +260,7 @@ def clarify_product(keyword: str, max_groups: int = 5) -> str:
                 price = get_latest_price(db, p.product_id)
                 if price:
                     brand_str = f"[{p.brand}]" if p.brand else ""
-                    results.append(f"{brand_str}{p.product_name} - {float(price.price_value)}元/{price.price_unit}")
+                    results.append(f"{brand_str}{p.product_name}{{#id={p.product_id}}} - {float(price.price_value)}元/{price.price_unit}")
             if results:
                 return f"'{keyword}'相关产品价格：\n" + "\n".join(results)
             return f"找到产品'{keyword}'但暂无价格数据。"

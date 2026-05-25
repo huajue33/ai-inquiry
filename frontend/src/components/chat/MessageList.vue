@@ -95,6 +95,7 @@
               v-if="msg.content"
               class="message-content markdown-body"
               v-html="renderMarkdown(msg.content)"
+              @click="handleContentClick"
             ></div>
             <!-- 光标 -->
             <span v-if="isLastMessage(msg) && chatStore.streaming && msg.content" class="cursor">|</span>
@@ -119,6 +120,65 @@
         </template>
       </div>
     </TransitionGroup>
+
+    <!-- 产品详情弹窗 -->
+    <el-drawer v-model="productDrawerVisible" :title="`商品详情 - ${productDrawerName}`" size="600px">
+      <div class="product-drawer-content">
+        <!-- 商品基础信息 -->
+        <div class="product-info-card" v-if="productInfo">
+          <div class="product-info-grid">
+            <div class="info-item">
+              <span class="info-label">商品ID</span>
+              <span class="info-value">{{ productInfo.product_id }}</span>
+            </div>
+            <div class="info-item">
+              <span class="info-label">商品名称</span>
+              <span class="info-value">{{ productInfo.product_name }}</span>
+            </div>
+            <div class="info-item">
+              <span class="info-label">品牌</span>
+              <span class="info-value">{{ productInfo.brand || '-' }}</span>
+            </div>
+            <div class="info-item">
+              <span class="info-label">品质</span>
+              <span class="info-value">{{ productInfo.quality || '-' }}</span>
+            </div>
+            <div class="info-item">
+              <span class="info-label">规格</span>
+              <span class="info-value">{{ productInfo.spec || '-' }}</span>
+            </div>
+            <div class="info-item">
+              <span class="info-label">分类</span>
+              <span class="info-value">{{ productInfo.category_name || '-' }}</span>
+            </div>
+            <div class="info-item" v-if="productInfo.latest_price">
+              <span class="info-label">最新价格</span>
+              <span class="info-value price-highlight">¥{{ productInfo.latest_price.price }}/{{ productInfo.latest_price.unit }}
+                <span class="price-date">（{{ productInfo.latest_price.date }}）</span>
+              </span>
+            </div>
+          </div>
+        </div>
+        <el-skeleton v-else :rows="3" animated style="margin-bottom: 16px" />
+
+        <!-- 价格趋势 -->
+        <div class="price-section-title">历史价格趋势</div>
+        <div class="price-toolbar">
+          <el-radio-group v-model="productDays" size="small" @change="loadProductPrices">
+            <el-radio-button :value="7">近一周</el-radio-button>
+            <el-radio-button :value="30">近一月</el-radio-button>
+            <el-radio-button :value="90">近三月</el-radio-button>
+          </el-radio-group>
+        </div>
+        <div ref="productChartRef" class="product-chart"></div>
+        <el-table :data="productPrices" stripe size="small" max-height="250">
+          <el-table-column prop="date" label="日期" min-width="110" />
+          <el-table-column label="价格">
+            <template #default="{ row }">¥{{ row.price }}/{{ row.unit }}</template>
+          </el-table-column>
+        </el-table>
+      </div>
+    </el-drawer>
   </div>
 </template>
 
@@ -126,7 +186,9 @@
 import { ref, reactive, nextTick, watch, onUnmounted } from "vue"
 import MarkdownIt from "markdown-it"
 import { Loading, MagicStick, Select, TrendCharts, Search, DataAnalysis } from "@element-plus/icons-vue"
+import * as echarts from "echarts"
 import { useChatStore } from "../../stores/chat"
+import request from "../../api/request"
 import type { ChatMessage } from "../../types/card"
 
 const chatStore = useChatStore()
@@ -134,6 +196,16 @@ const listRef = ref<HTMLElement>()
 const thinkingExpanded = reactive<Record<string, boolean>>({})
 const elapsedTime = ref("0s")
 let elapsedTimer: ReturnType<typeof setInterval> | null = null
+
+// 产品详情弹窗
+const productDrawerVisible = ref(false)
+const productDrawerName = ref("")
+const productDrawerId = ref(0)
+const productDays = ref(30)
+const productPrices = ref<any[]>([])
+const productInfo = ref<any>(null)
+const productChartRef = ref<HTMLElement>()
+let productChart: echarts.ECharts | null = null
 
 // 动态计时器：streaming 时每秒更新
 watch(() => chatStore.streaming, (streaming) => {
@@ -157,6 +229,7 @@ watch(() => chatStore.streaming, (streaming) => {
 
 onUnmounted(() => {
   if (elapsedTimer) clearInterval(elapsedTimer)
+  productChart?.dispose()
 })
 
 const md = new MarkdownIt({
@@ -178,9 +251,186 @@ function toggleThinking(msgId: string) {
   thinkingExpanded[msgId] = !thinkingExpanded[msgId]
 }
 
+/**
+ * 渲染 Markdown，并将产品名转为可点击的 span。
+ *
+ * 后端工具返回 {#id=12345} 标记，LLM 被要求在最终回复中保留。
+ * 策略：先渲染 markdown，再在 HTML 结果中找到 {#id=数字} 并把前面的产品名包成链接。
+ */
 function renderMarkdown(content: string): string {
   if (!content) return ""
-  return md.render(content)
+
+  // 先正常渲染 markdown
+  let html = md.render(content)
+
+  // 在渲染后的 HTML 中处理 {#id=xxx} 标记
+  // 标记可能出现在 <td>、<li>、<p> 等元素内部
+  // 匹配：一段文本 + {#id=数字}
+  html = html.replace(
+    /([^<>{}\n]*?)\{#id=(\d+)\}/g,
+    (_match, textBefore, productId) => {
+      let name = textBefore.trim()
+      if (!name) return ''
+
+      // 如果产品名中包含价格部分（" - 1.53元/斤"），分离出来
+      const priceMatch = name.match(/^(.+?)\s*[-–—]\s*([\d.]+元\/.+)$/)
+      if (priceMatch) {
+        const prodName = priceMatch[1].trim()
+        const priceText = priceMatch[2].trim()
+        return `<span class="product-link" data-product-id="${productId}" title="点击查看价格详情">${prodName}</span> - ${priceText}`
+      }
+
+      // 没有价格部分，整个作为链接
+      return `<span class="product-link" data-product-id="${productId}" title="点击查看价格详情">${name}</span>`
+    }
+  )
+
+  return html
+}
+
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+}
+
+/**
+ * 处理 AI 消息内容区域的点击事件（事件委托）
+ */
+function handleContentClick(e: MouseEvent) {
+  const target = e.target as HTMLElement
+  if (target.classList.contains("product-link")) {
+    const productId = target.dataset.productId
+    const productName = target.textContent || ""
+    if (productId) {
+      openProductDrawerById(parseInt(productId), productName)
+    }
+  }
+}
+
+/**
+ * 通过 product_id 直接打开价格详情弹窗（无需搜索）
+ */
+async function openProductDrawerById(id: number, name: string) {
+  productDrawerId.value = id
+  productDrawerName.value = name
+  productDrawerVisible.value = true
+  productDays.value = 30
+  productInfo.value = null
+  productPrices.value = []
+
+  // 并行加载商品信息和价格数据
+  await Promise.all([loadProductInfo(), loadProductPrices()])
+}
+
+/**
+ * 加载商品基础信息
+ */
+async function loadProductInfo() {
+  if (!productDrawerId.value) return
+  try {
+    const res: any = await request.get("/admin/products", {
+      params: { keyword: String(productDrawerId.value), page: 1, page_size: 1 },
+    })
+    if (res.products && res.products.length > 0) {
+      productInfo.value = res.products[0]
+      productDrawerName.value = res.products[0].product_name
+    }
+  } catch {
+    productInfo.value = null
+  }
+}
+
+/**
+ * 打开产品价格详情弹窗（兜底：用名称搜索）
+ */
+async function openProductDrawer(productName: string) {
+  productDrawerName.value = productName
+  productDrawerVisible.value = true
+  productDays.value = 30
+  productInfo.value = null
+  productPrices.value = []
+
+  try {
+    const res: any = await request.get("/admin/products", {
+      params: { keyword: productName, page: 1, page_size: 1 },
+    })
+    if (res.products && res.products.length > 0) {
+      const product = res.products[0]
+      productDrawerId.value = product.product_id
+      productDrawerName.value = product.product_name
+      productInfo.value = product
+      await loadProductPrices()
+    } else {
+      productPrices.value = []
+    }
+  } catch {
+    productPrices.value = []
+  }
+}
+
+async function loadProductPrices() {
+  if (!productDrawerId.value) return
+  try {
+    const res: any = await request.get(`/admin/products/${productDrawerId.value}/prices`, {
+      params: { days: productDays.value },
+    })
+    productPrices.value = res.prices
+    await nextTick()
+    renderProductChart()
+  } catch {
+    productPrices.value = []
+  }
+}
+
+function renderProductChart() {
+  if (!productChartRef.value) return
+
+  if (!productChart) {
+    productChart = echarts.init(productChartRef.value)
+  }
+
+  const dates = productPrices.value.map((p: any) => p.date)
+  const prices = productPrices.value.map((p: any) => p.price)
+  const unit = productPrices.value[0]?.unit || ""
+
+  productChart.setOption({
+    tooltip: {
+      trigger: "axis",
+      formatter: (params: any) => {
+        const p = params[0]
+        return `${p.axisValue}<br/>价格: ¥${p.value}/${unit}`
+      },
+    },
+    grid: { left: 50, right: 20, top: 20, bottom: 30 },
+    xAxis: {
+      type: "category",
+      data: dates,
+      axisLabel: { fontSize: 11, rotate: dates.length > 15 ? 45 : 0 },
+    },
+    yAxis: {
+      type: "value",
+      axisLabel: { fontSize: 11, formatter: (v: number) => `¥${v}` },
+    },
+    series: [{
+      type: "line",
+      data: prices,
+      smooth: true,
+      symbol: "circle",
+      symbolSize: 4,
+      lineStyle: { color: "#409eff", width: 2 },
+      itemStyle: { color: "#409eff" },
+      areaStyle: {
+        color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+          { offset: 0, color: "rgba(64, 158, 255, 0.2)" },
+          { offset: 1, color: "rgba(64, 158, 255, 0.02)" },
+        ]),
+      },
+    }],
+  })
+  productChart.resize()
 }
 
 function formatTime(ts: number) {
@@ -629,6 +879,90 @@ watch(() => chatStore.loading, () => { scrollToBottom() })
 /* Transition */
 .msg-enter-active { transition: all 0.3s ease; }
 .msg-enter-from { opacity: 0; transform: translateY(12px); }
+
+/* Product link - clickable product names in AI responses */
+.markdown-body :deep(.product-link) {
+  color: #409eff;
+  cursor: pointer;
+  border-bottom: 1px dashed #409eff;
+  transition: all 0.2s;
+  font-weight: 500;
+}
+
+.markdown-body :deep(.product-link:hover) {
+  color: #66b1ff;
+  border-bottom-color: #66b1ff;
+  background: #ecf5ff;
+  border-radius: 2px;
+  padding: 0 2px;
+  margin: 0 -2px;
+}
+
+/* Product drawer */
+.product-drawer-content {
+  padding: 0 4px;
+}
+
+.product-info-card {
+  background: #f9fafb;
+  border: 1px solid #ebeef5;
+  border-radius: 10px;
+  padding: 16px 20px;
+  margin-bottom: 20px;
+}
+
+.product-info-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px 24px;
+}
+
+.info-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.info-label {
+  font-size: 11px;
+  color: #909399;
+  font-weight: 500;
+}
+
+.info-value {
+  font-size: 13px;
+  color: #303133;
+  word-break: break-word;
+}
+
+.info-value.price-highlight {
+  color: #409eff;
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.price-date {
+  font-size: 11px;
+  color: #909399;
+  font-weight: normal;
+}
+
+.price-section-title {
+  font-size: 14px;
+  font-weight: 500;
+  color: #303133;
+  margin-bottom: 12px;
+}
+
+.price-toolbar {
+  margin-bottom: 16px;
+}
+
+.product-chart {
+  width: 100%;
+  height: 240px;
+  margin-bottom: 16px;
+}
 
 /* ===== Mobile ===== */
 @media (max-width: 768px) {

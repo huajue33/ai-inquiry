@@ -1,10 +1,50 @@
 <template>
   <div class="admin-page">
     <h2>{{ isAdmin ? "对话记录" : "我的对话记录" }}</h2>
+
+    <!-- 搜索工具栏 -->
+    <div class="toolbar">
+      <el-input
+        v-model="keyword"
+        placeholder="搜索对话标题或消息内容"
+        style="width: 280px"
+        clearable
+        @keyup.enter="handleSearch"
+        @clear="handleSearch"
+      >
+        <template #append>
+          <el-button @click="handleSearch"><el-icon><Search /></el-icon></el-button>
+        </template>
+      </el-input>
+      <el-select
+        v-if="isAdmin"
+        v-model="filterUserId"
+        placeholder="筛选用户"
+        clearable
+        filterable
+        style="width: 180px"
+        @change="handleSearch"
+      >
+        <el-option
+          v-for="u in userList"
+          :key="u.id"
+          :label="`${u.real_name} (${u.username})`"
+          :value="u.id"
+        />
+      </el-select>
+      <el-tag v-if="keyword || filterUserId" type="info" closable @close="clearFilters">
+        {{ filterSummary }}
+      </el-tag>
+    </div>
+
     <el-table :data="convList" stripe style="width: 100%">
       <el-table-column v-if="isAdmin" prop="user_id" label="用户ID" min-width="70" />
       <el-table-column v-if="isAdmin" prop="user_name" label="用户" min-width="100" />
-      <el-table-column prop="title" label="标题" min-width="180" />
+      <el-table-column prop="title" label="标题" min-width="180">
+        <template #default="{ row }">
+          <span v-html="highlightKeyword(row.title)"></span>
+        </template>
+      </el-table-column>
       <el-table-column prop="message_count" label="消息数" min-width="80" />
       <el-table-column prop="token_count" label="Token消耗" min-width="100">
         <template #default="{ row }">
@@ -49,7 +89,7 @@
               </span>
             </div>
             <div v-if="msg.role === 'assistant'" class="conv-msg-content markdown-body" v-html="renderMarkdown(msg.content)"></div>
-            <div v-else class="conv-msg-content">{{ msg.content }}</div>
+            <div v-else class="conv-msg-content" v-html="highlightKeyword(msg.content)"></div>
           </div>
         </div>
       </template>
@@ -59,6 +99,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from "vue"
+import { Search } from "@element-plus/icons-vue"
 import MarkdownIt from "markdown-it"
 import request from "../../api/request"
 
@@ -70,19 +111,65 @@ const isAdmin = computed(() => currentUser.role === "admin")
 const convList = ref<any[]>([])
 const total = ref(0)
 const page = ref(1)
+const keyword = ref("")
+const filterUserId = ref<number | undefined>(undefined)
+const userList = ref<any[]>([])
 const dialogVisible = ref(false)
 const messages = ref<any[]>([])
 
-onMounted(() => { loadConversations() })
+const filterSummary = computed(() => {
+  const parts: string[] = []
+  if (keyword.value) parts.push(`关键词: "${keyword.value}"`)
+  if (filterUserId.value) {
+    const u = userList.value.find((u: any) => u.id === filterUserId.value)
+    if (u) parts.push(`用户: ${u.real_name}`)
+  }
+  return parts.join(' | ')
+})
+
+onMounted(() => {
+  loadConversations()
+  if (isAdmin.value) loadUsers()
+})
 
 function renderMarkdown(content: string): string {
   if (!content) return ""
   return md.render(content)
 }
 
+function highlightKeyword(text: string): string {
+  if (!text || !keyword.value.trim()) return text || ""
+  const kw = keyword.value.trim()
+  // 转义正则特殊字符
+  const escaped = kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const regex = new RegExp(`(${escaped})`, 'gi')
+  return text.replace(regex, '<mark class="search-highlight">$1</mark>')
+}
+
+function handleSearch() {
+  page.value = 1
+  loadConversations()
+}
+
+function clearFilters() {
+  keyword.value = ""
+  filterUserId.value = undefined
+  handleSearch()
+}
+
+async function loadUsers() {
+  try {
+    const res: any = await request.get("/admin/users")
+    userList.value = res.users || []
+  } catch { /* ignore */ }
+}
+
 async function loadConversations() {
   try {
-    const res: any = await request.get("/admin/conversations", { params: { page: page.value, page_size: 20 } })
+    const params: any = { page: page.value, page_size: 20 }
+    if (keyword.value.trim()) params.keyword = keyword.value.trim()
+    if (filterUserId.value) params.user_id = filterUserId.value
+    const res: any = await request.get("/admin/conversations", { params })
     convList.value = res.conversations
     total.value = res.total
   } catch { /* ignore */ }
@@ -100,6 +187,7 @@ async function viewConversation(id: string) {
 <style scoped>
 .admin-page { padding: 24px; }
 .admin-page h2 { font-size: 18px; font-weight: 600; color: #303133; margin: 0 0 20px; }
+.toolbar { margin-bottom: 16px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
 .pagination { margin-top: 16px; justify-content: flex-end; }
 
 .conv-messages {
@@ -163,6 +251,14 @@ async function viewConversation(id: string) {
 
 .conv-msg.user .conv-msg-content {
   white-space: pre-wrap;
+}
+
+/* Search highlight */
+:deep(.search-highlight) {
+  background: #fef3cd;
+  color: #856404;
+  padding: 0 2px;
+  border-radius: 2px;
 }
 
 /* Markdown styles */

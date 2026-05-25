@@ -28,21 +28,63 @@ export async function sendMessageStream(
   },
   abortSignal?: AbortSignal
 ): Promise<void> {
-  const token = localStorage.getItem("token")
+  let token = localStorage.getItem("token")
 
-  const response = await fetch("/api/chat/stream", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-    body: JSON.stringify({
-      message,
-      conversation_id: conversationId,
-      enable_thinking: enableThinking,
-    }),
-    signal: abortSignal,
-  })
+  const doFetch = async (authToken: string | null) => {
+    return fetch("/api/chat/stream", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+      },
+      body: JSON.stringify({
+        message,
+        conversation_id: conversationId,
+        enable_thinking: enableThinking,
+      }),
+      signal: abortSignal,
+    })
+  }
+
+  let response = await doFetch(token)
+
+  // 如果 401，尝试用 refresh token 续期后重试
+  if (response.status === 401) {
+    const refreshTokenStr = localStorage.getItem("refresh_token")
+    if (refreshTokenStr) {
+      try {
+        const refreshRes = await fetch("/api/auth/refresh", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ refresh_token: refreshTokenStr }),
+        })
+        if (refreshRes.ok) {
+          const data = await refreshRes.json()
+          localStorage.setItem("token", data.access_token)
+          localStorage.setItem("refresh_token", data.refresh_token)
+          token = data.access_token
+          response = await doFetch(token)
+        } else {
+          localStorage.removeItem("token")
+          localStorage.removeItem("refresh_token")
+          localStorage.removeItem("user")
+          window.location.href = "/login"
+          return
+        }
+      } catch {
+        localStorage.removeItem("token")
+        localStorage.removeItem("refresh_token")
+        localStorage.removeItem("user")
+        window.location.href = "/login"
+        return
+      }
+    } else {
+      localStorage.removeItem("token")
+      localStorage.removeItem("user")
+      window.location.href = "/login"
+      return
+    }
+  }
 
   if (!response.ok) {
     callbacks.onError(`请求失败: ${response.status}`)
