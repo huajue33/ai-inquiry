@@ -6,19 +6,20 @@
 - 变动幅度：±1%~6%
 - 其余产品价格保持不变（向后填充）
 """
+import os
 import random
 from datetime import date, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 
 import pymysql
 
-# 数据库连接
+# 数据库连接（优先读环境变量，方便容器内运行）
 conn = pymysql.connect(
-    host="127.0.0.1",
-    port=3306,
-    user="root",
-    password="20031211",
-    database="quotation",
+    host=os.getenv("DB_HOST", "127.0.0.1"),
+    port=int(os.getenv("DB_PORT", "3306")),
+    user=os.getenv("DB_USER", "root"),
+    password=os.getenv("DB_PASSWORD", ""),
+    database=os.getenv("DB_NAME", "quotation"),
     charset="utf8mb4",
 )
 

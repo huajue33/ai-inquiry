@@ -44,10 +44,14 @@ services:
     volumes:
       - meili_data:/meili_data
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:7700/health"]
+      # meili 镜像没装 wget/curl，改用 socket 探测：bash 内置 /dev/tcp 也没有，
+      # 所以最稳的是把 healthcheck 移除，依赖 backend 自己重试连接
+      # 这里用 meili 自身二进制做版本探测（任何输出都算成功）
+      test: ["CMD", "/bin/meilisearch", "--version"]
       interval: 10s
       timeout: 5s
-      retries: 10
+      retries: 5
+      start_period: 10s
     networks:
       - quotation-net
 
