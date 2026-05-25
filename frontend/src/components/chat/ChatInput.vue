@@ -43,6 +43,7 @@ import { ref } from "vue"
 import { Promotion, MagicStick, VideoPause } from "@element-plus/icons-vue"
 import { useChatStore } from "../../stores/chat"
 import { sendMessageStream } from "../../api/chat"
+import { uuid } from "../../utils/uuid"
 import type { ChatMessage } from "../../types/card"
 
 const chatStore = useChatStore()
@@ -83,7 +84,7 @@ async function handleSend() {
 
   // 如果没有 conversationId，先生成一个
   if (!chatStore.conversationId) {
-    chatStore.setConversationId(crypto.randomUUID())
+    chatStore.setConversationId(uuid())
   }
 
   // 捕获当前对话 ID，后续所有操作都绑定到这个 ID
