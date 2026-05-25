@@ -288,14 +288,6 @@ function renderMarkdown(content: string): string {
   return html
 }
 
-function escapeHtml(str: string): string {
-  return str
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-}
-
 /**
  * 处理 AI 消息内容区域的点击事件（事件委托）
  */
@@ -340,34 +332,6 @@ async function loadProductInfo() {
     }
   } catch {
     productInfo.value = null
-  }
-}
-
-/**
- * 打开产品价格详情弹窗（兜底：用名称搜索）
- */
-async function openProductDrawer(productName: string) {
-  productDrawerName.value = productName
-  productDrawerVisible.value = true
-  productDays.value = 30
-  productInfo.value = null
-  productPrices.value = []
-
-  try {
-    const res: any = await request.get("/admin/products", {
-      params: { keyword: productName, page: 1, page_size: 1 },
-    })
-    if (res.products && res.products.length > 0) {
-      const product = res.products[0]
-      productDrawerId.value = product.product_id
-      productDrawerName.value = product.product_name
-      productInfo.value = product
-      await loadProductPrices()
-    } else {
-      productPrices.value = []
-    }
-  } catch {
-    productPrices.value = []
   }
 }
 
