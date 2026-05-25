@@ -1,0 +1,35 @@
+/* ============================================================
+ * 全局滚动条样式
+ * 所有可滚动元素统一为 5px 极简灰条
+ * 想覆盖某处的话，提高选择器特异性即可
+ * ============================================================ */
+
+/* WebKit / Chromium / Safari */
+*::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: #d9dce1;
+  border-radius: 3px;
+  transition: background 0.2s;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: #b4b8be;
+}
+
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* Firefox */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #d9dce1 transparent;
+}

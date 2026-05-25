@@ -1,10 +1,13 @@
 <template>
   <div class="admin-page">
-    <h2>数据概览</h2>
+    <h2>
+      数据概览
+      <el-tag v-if="!isAdmin" size="small" type="info" class="scope-tag">仅显示我自己的数据</el-tag>
+    </h2>
 
     <!-- 统计卡片 -->
     <div class="stat-cards">
-      <div class="stat-card">
+      <div v-if="isAdmin" class="stat-card">
         <div class="stat-icon users"><el-icon :size="24"><User /></el-icon></div>
         <div class="stat-info">
           <div class="stat-value">{{ stats.total_users }}</div>
@@ -70,10 +73,13 @@
 </template>
 
 <script setup lang="ts">
-import { reactive, ref, onMounted, onUnmounted, nextTick } from "vue"
+import { reactive, ref, computed, onMounted, onUnmounted, nextTick } from "vue"
 import { User, Goods, ChatDotRound, Comment, TrendCharts, Coin } from "@element-plus/icons-vue"
 import * as echarts from "echarts"
 import request from "../../api/request"
+
+const currentUser = JSON.parse(localStorage.getItem("user") || '{"role":""}')
+const isAdmin = computed(() => currentUser.role === "admin")
 
 const stats = reactive<any>({
   total_users: 0,
@@ -190,6 +196,12 @@ function renderCharts() {
   font-weight: 600;
   color: #303133;
   margin: 0 0 20px;
+}
+
+.scope-tag {
+  margin-left: 12px;
+  vertical-align: middle;
+  font-weight: normal;
 }
 
 /* Stat cards */

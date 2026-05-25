@@ -125,9 +125,7 @@ async function handleLogin() {
   position: relative;
   overflow: hidden;
   text-align: center;
-}
-
-.login-left::before {
+}.login-left::before {
   content: "";
   position: absolute;
   top: -20%;
@@ -251,5 +249,68 @@ async function handleLogin() {
   border-radius: 10px;
   font-size: 15px;
   margin-top: 8px;
+}
+
+/* ===== Mobile ===== */
+@media (max-width: 768px) {
+  .login-page {
+    flex-direction: column;
+    background: linear-gradient(135deg, #409eff 0%, #6366f1 100%);
+  }
+
+  .login-left {
+    flex: 0 0 auto;
+    padding: 32px 24px 24px;
+  }
+
+  .login-left::before,
+  .login-left::after {
+    display: none;
+  }
+
+  .brand-logo {
+    width: 56px;
+    height: 56px;
+    margin-bottom: 12px;
+  }
+
+  .brand-title {
+    font-size: 24px;
+    margin-bottom: 6px;
+  }
+
+  .brand-desc {
+    font-size: 13px;
+    margin-bottom: 0;
+  }
+
+  .login-brand {
+    margin-bottom: 0;
+  }
+
+  .login-features {
+    display: none;
+  }
+
+  .login-right {
+    flex: 1;
+    width: 100%;
+    padding: 24px;
+    border-radius: 24px 24px 0 0;
+    background: #fff;
+    margin-top: -8px;
+  }
+
+  .login-form-wrapper {
+    max-width: 100%;
+  }
+
+  .login-form-wrapper h2 {
+    font-size: 20px;
+  }
+
+  .form-subtitle {
+    margin-bottom: 24px;
+  }
 }
 </style>

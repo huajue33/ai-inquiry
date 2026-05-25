@@ -251,22 +251,6 @@ function renderChart() {
   overflow-y: auto;
 }
 
-.drawer-content::-webkit-scrollbar {
-  width: 5px;
-}
-
-.drawer-content::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.drawer-content::-webkit-scrollbar-thumb {
-  background: #e4e7ed;
-  border-radius: 3px;
-}
-
-.drawer-content::-webkit-scrollbar-thumb:hover {
-  background: #c0c4cc;
-}
 .price-toolbar { margin-bottom: 16px; }
 .price-chart { width: 100%; height: 260px; margin-bottom: 16px; }
 .price-table { margin-top: 8px; }

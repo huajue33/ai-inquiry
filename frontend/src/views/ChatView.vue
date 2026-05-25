@@ -1,43 +1,58 @@
 <template>
   <div class="chat-layout">
+    <!-- 移动端遮罩：点击关闭抽屉 -->
+    <div
+      v-if="isMobile && mobileSidebarOpen"
+      class="mobile-mask"
+      @click="mobileSidebarOpen = false"
+    ></div>
+
     <!-- 左侧边栏 -->
-    <aside :class="['sidebar', { collapsed: sidebarCollapsed }]">
+    <aside :class="['sidebar', { collapsed: !isMobile && sidebarCollapsed, 'mobile-open': isMobile && mobileSidebarOpen, 'mobile-hidden': isMobile && !mobileSidebarOpen }]">
       <div class="sidebar-header">
-        <!-- 折叠状态：默认显示 logo，hover 侧边栏时显示展开按钮 -->
-        <div v-if="sidebarCollapsed" class="logo-collapsed" @click="sidebarCollapsed = false">
+        <!-- 折叠状态（仅桌面）：默认显示 logo，hover 侧边栏时显示展开按钮 -->
+        <div v-if="!isMobile && sidebarCollapsed" class="logo-collapsed" @click="sidebarCollapsed = false">
           <img src="/favicon.svg" alt="logo" class="logo-img-collapsed" />
           <el-icon class="expand-icon" :size="18"><Expand /></el-icon>
         </div>
-        <!-- 展开状态：正常显示 logo + 文字 + 折叠按钮 -->
+        <!-- 展开状态：正常显示 logo + 文字 + 折叠/关闭按钮 -->
         <template v-else>
           <img src="/favicon.svg" alt="logo" class="logo-img-static" />
           <span class="logo-text">AI 询价助手</span>
-          <el-button text circle class="collapse-btn" @click="sidebarCollapsed = true">
-            <el-icon :size="16"><Fold /></el-icon>
+          <el-button
+            text
+            circle
+            class="collapse-btn"
+            @click="isMobile ? (mobileSidebarOpen = false) : (sidebarCollapsed = true)"
+          >
+            <el-icon :size="16">
+              <Close v-if="isMobile" />
+              <Fold v-else />
+            </el-icon>
           </el-button>
         </template>
       </div>
-      <div class="sidebar-action" v-show="!sidebarCollapsed">
+      <div class="sidebar-action" v-show="isMobile || !sidebarCollapsed">
         <el-button type="primary" round class="new-chat-btn" @click="handleClear">
           <el-icon><Plus /></el-icon>
           <span>新建询价对话</span>
         </el-button>
       </div>
-      <div class="sidebar-action" v-show="sidebarCollapsed">
+      <div class="sidebar-action" v-show="!isMobile && sidebarCollapsed">
         <el-tooltip content="新建对话" placement="right">
           <el-button type="primary" circle size="small" @click="handleClear">
             <el-icon><Plus /></el-icon>
           </el-button>
         </el-tooltip>
       </div>
-      <div class="sidebar-history" v-show="!sidebarCollapsed">
+      <div class="sidebar-history" v-show="isMobile || !sidebarCollapsed">
         <div class="history-label">最近记录</div>
         <div class="history-list">
           <div
             v-for="conv in chatStore.conversations"
             :key="conv.id"
             :class="['history-item', { active: conv.id === chatStore.conversationId }]"
-            @click="chatStore.switchConversation(conv.id)"
+            @click="handleSwitchConversation(conv.id)"
           >
             <el-icon :size="14" :class="{ 'is-loading': chatStore.isConversationLoading(conv.id) }"><ChatDotRound /></el-icon>
             <span class="history-title">{{ conv.title }}</span>
@@ -61,18 +76,27 @@
     <main class="main-area">
       <header class="main-header">
         <div class="header-title">
-          <el-icon :size="18"><ChatDotRound /></el-icon>
-          <span>{{ currentConversationTitle }}</span>
+          <!-- 移动端汉堡菜单 -->
+          <el-button
+            v-if="isMobile"
+            text
+            circle
+            class="hamburger"
+            @click="mobileSidebarOpen = true"
+          >
+            <el-icon :size="18"><Menu /></el-icon>
+          </el-button>
+          <el-icon v-else :size="18"><ChatDotRound /></el-icon>
+          <span class="title-text">{{ currentConversationTitle }}</span>
         </div>
         <div class="header-actions">
           <el-button
-            v-if="currentUser.role === 'admin'"
             text
             class="admin-entry-btn"
             @click="$router.push('/admin')"
           >
             <el-icon :size="14"><Setting /></el-icon>
-            <span>管理后台</span>
+            <span class="action-label">管理后台</span>
           </el-button>
           <el-dropdown trigger="click" @command="handleUserCommand">
             <span class="user-dropdown">
@@ -126,9 +150,9 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted } from "vue"
+import { ref, reactive, computed, onMounted, onUnmounted } from "vue"
 import { useRouter } from "vue-router"
-import { Delete, Plus, ChatDotRound, Fold, Expand, User, ArrowDown, Lock, SwitchButton, Setting } from "@element-plus/icons-vue"
+import { Delete, Plus, ChatDotRound, Fold, Expand, User, ArrowDown, Lock, SwitchButton, Setting, Menu, Close } from "@element-plus/icons-vue"
 import { ElMessage } from "element-plus"
 import { useChatStore } from "../stores/chat"
 import MessageList from "../components/chat/MessageList.vue"
@@ -139,6 +163,21 @@ const router = useRouter()
 const chatStore = useChatStore()
 const chatInputRef = ref()
 const sidebarCollapsed = ref(false)
+
+// 移动端断点 + 抽屉状态
+const isMobile = ref(window.innerWidth <= 768)
+const mobileSidebarOpen = ref(false)
+function onResize() {
+  isMobile.value = window.innerWidth <= 768
+  if (!isMobile.value) mobileSidebarOpen.value = false
+}
+window.addEventListener("resize", onResize)
+onUnmounted(() => window.removeEventListener("resize", onResize))
+
+function handleSwitchConversation(id: string) {
+  chatStore.switchConversation(id)
+  if (isMobile.value) mobileSidebarOpen.value = false
+}
 
 const currentUser = reactive(
   JSON.parse(localStorage.getItem("user") || '{"real_name":"用户","username":""}')
@@ -155,6 +194,7 @@ onMounted(() => {
 
 function handleClear() {
   chatStore.newConversation()
+  if (isMobile.value) mobileSidebarOpen.value = false
 }
 
 function handleUserCommand(command: string) {
@@ -467,23 +507,6 @@ function handleQuickQuestion(q: string) {
   padding: 24px 24px;
 }
 
-.chat-body::-webkit-scrollbar {
-  width: 5px;
-}
-
-.chat-body::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.chat-body::-webkit-scrollbar-thumb {
-  background: #e4e7ed;
-  border-radius: 3px;
-}
-
-.chat-body::-webkit-scrollbar-thumb:hover {
-  background: #c0c4cc;
-}
-
 .chat-footer {
   padding: 12px 12px 16px;
   background: #fff;
@@ -495,5 +518,90 @@ function handleQuickQuestion(q: string) {
   font-size: 11px;
   color: #c0c4cc;
   margin-top: 10px;
+}
+
+/* ===== Mobile ===== */
+.mobile-mask {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  z-index: 998;
+  animation: fade-in 0.2s ease;
+}
+
+.hamburger {
+  margin-right: 4px;
+  color: #606266;
+}
+
+.title-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+@media (max-width: 768px) {
+  /* 侧栏在移动端变为绝对定位的抽屉 */
+  .sidebar {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: 80vw;
+    max-width: 320px;
+    z-index: 999;
+    box-shadow: 2px 0 16px rgba(0, 0, 0, 0.12);
+    transform: translateX(-100%);
+    transition: transform 0.25s ease;
+  }
+  .sidebar.mobile-open {
+    transform: translateX(0);
+  }
+  .sidebar.mobile-hidden {
+    transform: translateX(-100%);
+  }
+
+  .main-header {
+    padding: 10px 12px;
+  }
+
+  .header-title {
+    font-size: 14px;
+    flex: 1;
+    min-width: 0;
+  }
+
+  .admin-entry-btn .action-label {
+    display: none;
+  }
+
+  .admin-entry-btn {
+    margin-right: 0;
+    padding: 6px;
+  }
+
+  .user-name {
+    max-width: 60px;
+    font-size: 12px;
+  }
+
+  .chat-body {
+    padding: 12px;
+  }
+
+  .chat-footer {
+    padding: 8px 8px 12px;
+    padding-bottom: calc(12px + var(--safe-bottom));
+  }
+
+  .footer-tip {
+    font-size: 10px;
+    margin-top: 6px;
+  }
 }
 </style>

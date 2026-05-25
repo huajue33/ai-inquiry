@@ -48,11 +48,26 @@ router.beforeEach((to, _from, next) => {
   const token = localStorage.getItem("token")
   if (to.meta.requiresAuth && !token) {
     next("/login")
-  } else if (to.path === "/login" && token) {
-    next("/")
-  } else {
-    next()
+    return
   }
+  if (to.path === "/login" && token) {
+    next("/")
+    return
+  }
+  // /admin/users 需要 admin 或 manager；其余 /admin/* 任意登录用户可访问
+  if (to.path.startsWith("/admin/users")) {
+    try {
+      const user = JSON.parse(localStorage.getItem("user") || "{}")
+      if (user.role !== "admin" && user.role !== "manager") {
+        next("/admin")
+        return
+      }
+    } catch {
+      next("/admin")
+      return
+    }
+  }
+  next()
 })
 
 export default router

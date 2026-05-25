@@ -1,0 +1,106 @@
+/* ============================================================
+ * 全局移动端基础适配
+ * 断点：≤768px 视为移动端
+ * ============================================================ */
+
+:root {
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --mobile-bp: 768px;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  overflow: hidden;
+  -webkit-text-size-adjust: 100%;
+  -webkit-tap-highlight-color: transparent;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC",
+    "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
+}
+
+/* 移动端：禁止双指缩放误触；点击体验 */
+@media (max-width: 768px) {
+  html, body { font-size: 14px; }
+
+  /* 弹窗适配 */
+  .el-overlay-dialog {
+    padding: 16px;
+  }
+  .el-dialog {
+    width: 92vw !important;
+    max-width: 92vw !important;
+    margin: auto !important;
+  }
+  .el-drawer.rtl,
+  .el-drawer.ltr {
+    width: 84vw !important;
+    max-width: 360px !important;
+  }
+  .el-drawer.btt,
+  .el-drawer.ttb {
+    height: 70vh !important;
+  }
+
+  /* 表格滚动友好 */
+  .el-table {
+    font-size: 13px;
+  }
+
+  /* 表单 */
+  .el-form-item__label {
+    font-size: 13px;
+  }
+
+  /* 消息提示 */
+  .el-message {
+    min-width: 60vw;
+    max-width: 90vw;
+  }
+
+  .el-button + .el-button {
+    margin-left: 6px;
+  }
+
+  /* ===== 通用 admin 页内边距压缩 ===== */
+  .admin-page {
+    padding: 16px 12px !important;
+  }
+
+  .admin-page h2 {
+    font-size: 16px !important;
+    margin-bottom: 14px !important;
+  }
+
+  /* 数据概览：图表卡片单列 */
+  .chart-section {
+    grid-template-columns: 1fr !important;
+  }
+
+  /* 分页：紧凑模式 */
+  .el-pagination {
+    flex-wrap: wrap;
+    justify-content: center !important;
+  }
+  .el-pagination .el-pager li {
+    min-width: 28px;
+  }
+
+  /* 工具栏：允许换行 */
+  .toolbar {
+    flex-wrap: wrap;
+  }
+  .toolbar > * {
+    flex-shrink: 0;
+  }
+
+  /* 商品页的搜索/分类栏调整 */
+  .toolbar .el-input,
+  .toolbar .el-cascader {
+    width: 100% !important;
+  }
+}

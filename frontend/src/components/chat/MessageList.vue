@@ -282,9 +282,7 @@ watch(() => chatStore.loading, () => { scrollToBottom() })
   grid-template-columns: repeat(3, 1fr);
   gap: 16px;
   text-align: left;
-}
-
-.feature-card {
+}.feature-card {
   background: #fff;
   border: 1px solid #ebeef5;
   border-radius: 12px;
@@ -631,4 +629,55 @@ watch(() => chatStore.loading, () => { scrollToBottom() })
 /* Transition */
 .msg-enter-active { transition: all 0.3s ease; }
 .msg-enter-from { opacity: 0; transform: translateY(12px); }
+
+/* ===== Mobile ===== */
+@media (max-width: 768px) {
+  .welcome {
+    padding: 32px 12px 24px;
+  }
+
+  .welcome h2 {
+    font-size: 20px;
+  }
+
+  .welcome-desc {
+    font-size: 13px;
+    margin-bottom: 24px;
+  }
+
+  .feature-cards {
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+
+  .feature-card {
+    padding: 16px;
+  }
+
+  .user-bubble {
+    max-width: 85%;
+    font-size: 13px;
+  }
+
+  .ai-message {
+    font-size: 13px;
+  }
+
+  .markdown-body :deep(table) {
+    font-size: 12px;
+  }
+
+  .markdown-body :deep(pre) {
+    font-size: 12px;
+  }
+
+  .message-suggestions {
+    gap: 4px;
+  }
+
+  .suggestion-btn {
+    font-size: 11px;
+    padding: 4px 10px;
+  }
+}
 </style>

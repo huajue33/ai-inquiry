@@ -1,5 +1,14 @@
-"""管理后台 API"""
-from typing import Optional
+"""管理后台 API
+
+权限矩阵：
+- 数据概览  : admin / manager / buyer 都可见（buyer 只看自己）
+- 商品管理  : admin / manager / buyer 都可见
+- 对话记录  : admin / manager / buyer 都可见（admin 看全部；manager / buyer 仅自己）
+- 用户管理  : admin / manager 可见；buyer 不可访问
+              admin: 全权
+              manager: 仅查看 + 仅可调整 buyer 的数据权限，不能改密码/角色/启用状态
+"""
+from typing import Optional, List
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -11,15 +20,15 @@ from app.models.user import User
 from app.models.product import Product, Category
 from app.models.price import Price
 from app.models.conversation import Conversation, ChatMessage
+from app.models.permission import UserCategoryPermission
 from app.core.security import get_current_user, hash_password
+from app.core.permissions import (
+    require_admin,
+    require_admin_or_manager,
+    require_authed,
+)
 
 router = APIRouter()
-
-
-def require_admin(user: User = Depends(get_current_user)) -> User:
-    if user.role != "admin":
-        raise HTTPException(status_code=403, detail="需要管理员权限")
-    return user
 
 
 # ===== 用户管理 =====
@@ -49,10 +58,14 @@ class UpdateUserRequest(BaseModel):
 
 @router.get("/users")
 async def list_users(
-    admin: User = Depends(require_admin),
+    user: User = Depends(require_admin_or_manager),
     db: Session = Depends(get_db),
 ):
-    users = db.query(User).order_by(desc(User.created_at)).all()
+    """admin 看全部；manager 只看 buyer（用于配置数据权限）"""
+    query = db.query(User).order_by(desc(User.created_at))
+    if user.role == "manager":
+        query = query.filter(User.role == "buyer")
+    users = query.all()
     return {
         "users": [
             UserItem(
@@ -100,6 +113,18 @@ async def update_user(
     if not user:
         raise HTTPException(status_code=404, detail="用户不存在")
 
+    # 禁止管理员把自己禁用或降级，避免锁死
+    if user.id == admin.id:
+        if request.is_active is not None and request.is_active == 0:
+            raise HTTPException(status_code=400, detail="不能禁用自己的账号")
+        if request.role is not None and request.role != admin.role:
+            raise HTTPException(status_code=400, detail="不能修改自己的角色")
+        if request.password:
+            raise HTTPException(
+                status_code=400,
+                detail="请通过 '修改密码' 入口修改自己的密码",
+            )
+
     if request.real_name is not None:
         user.real_name = request.real_name
     if request.role is not None:
@@ -113,7 +138,65 @@ async def update_user(
     return {"ok": True}
 
 
-# ===== 商品管理 =====
+# ===== 数据权限（用户-分类映射） =====
+
+class UserPermissions(BaseModel):
+    user_id: int
+    category_ids: List[int]
+
+
+@router.get("/users/{user_id}/permissions")
+async def get_user_permissions(
+    user_id: int,
+    user: User = Depends(require_admin_or_manager),
+    db: Session = Depends(get_db),
+):
+    perms = (
+        db.query(UserCategoryPermission)
+        .filter(UserCategoryPermission.user_id == user_id)
+        .all()
+    )
+    return {"user_id": user_id, "category_ids": [p.category_id for p in perms]}
+
+
+@router.put("/users/{user_id}/permissions")
+async def set_user_permissions(
+    user_id: int,
+    payload: UserPermissions,
+    user: User = Depends(require_admin_or_manager),
+    db: Session = Depends(get_db),
+):
+    """全量替换：传入的 category_ids 即为该用户的最终授权列表
+
+    - admin: 可改任何人
+    - manager: 只能改 buyer
+    """
+    target = db.query(User).filter(User.id == user_id).first()
+    if not target:
+        raise HTTPException(status_code=404, detail="用户不存在")
+
+    if user.role == "manager" and target.role != "buyer":
+        raise HTTPException(status_code=403, detail="主管仅可调整采购员的数据权限")
+
+    # 校验传入的都是合法分类
+    if payload.category_ids:
+        cats = db.query(Category).filter(Category.id.in_(payload.category_ids)).all()
+        invalid = set(payload.category_ids) - set(c.id for c in cats)
+        if invalid:
+            raise HTTPException(status_code=400, detail=f"以下分类 ID 不存在：{sorted(invalid)}")
+
+    # 清空 + 重建
+    db.query(UserCategoryPermission).filter(
+        UserCategoryPermission.user_id == user_id
+    ).delete(synchronize_session=False)
+
+    for cat_id in payload.category_ids:
+        db.add(UserCategoryPermission(user_id=user_id, category_id=cat_id))
+    db.commit()
+    return {"ok": True, "count": len(payload.category_ids)}
+
+
+# ===== 商品管理（所有登录用户可访问） =====
 
 @router.get("/products")
 async def list_products(
@@ -121,7 +204,7 @@ async def list_products(
     category_id: Optional[int] = None,
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
-    admin: User = Depends(require_admin),
+    user: User = Depends(require_authed),
     db: Session = Depends(get_db),
 ):
     query = db.query(Product)
@@ -133,7 +216,7 @@ async def list_products(
     total = query.count()
     products = query.offset((page - 1) * page_size).limit(page_size).all()
 
-    # 批量获取分类名称（拼接完整路径：一级>二级>三级）
+    # 分类名（拼接完整路径：一级>二级>三级）
     cat_ids = list(set(p.category_id for p in products if p.category_id))
     cat_map = {}
     if cat_ids:
@@ -152,7 +235,6 @@ async def list_products(
     latest_prices = {}
     if product_ids:
         from sqlalchemy import and_
-        # 子查询获取每个产品的最新价格日期
         latest_date_sub = (
             db.query(Price.product_id, func.max(Price.price_date).label("max_date"))
             .filter(Price.product_id.in_(product_ids))
@@ -199,7 +281,7 @@ async def list_products(
 async def get_product_prices(
     product_id: int,
     days: int = Query(30, ge=1, le=365),
-    admin: User = Depends(require_admin),
+    user: User = Depends(require_authed),
     db: Session = Depends(get_db),
 ):
     """获取商品历史价格"""
@@ -231,7 +313,7 @@ async def get_product_prices(
 
 @router.get("/categories")
 async def list_categories(
-    admin: User = Depends(require_admin),
+    user: User = Depends(require_authed),
     db: Session = Depends(get_db),
 ):
     categories = db.query(Category).order_by(Category.level, Category.name).all()
@@ -250,12 +332,18 @@ async def list_all_conversations(
     user_id: Optional[int] = None,
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
-    admin: User = Depends(require_admin),
+    user: User = Depends(require_authed),
     db: Session = Depends(get_db),
 ):
+    """admin 可看全部，可按 user_id 过滤；manager / buyer 仅自己的"""
     query = db.query(Conversation)
-    if user_id:
-        query = query.filter(Conversation.user_id == user_id)
+
+    if user.role == "admin":
+        if user_id:
+            query = query.filter(Conversation.user_id == user_id)
+    else:
+        # manager / buyer 强制只看自己
+        query = query.filter(Conversation.user_id == user.id)
 
     total = query.count()
     convs = (
@@ -265,12 +353,10 @@ async def list_all_conversations(
         .all()
     )
 
-    # 获取用户名映射
     user_ids = list(set(c.user_id for c in convs))
     users = db.query(User).filter(User.id.in_(user_ids)).all() if user_ids else []
     user_map = {u.id: u.real_name for u in users}
 
-    # 获取每个对话的消息数量和 Token 消耗
     conv_ids = [c.id for c in convs]
     msg_counts = {}
     token_counts = {}
@@ -313,9 +399,16 @@ async def list_all_conversations(
 @router.get("/conversations/{conversation_id}/messages")
 async def get_conversation_messages(
     conversation_id: str,
-    admin: User = Depends(require_admin),
+    user: User = Depends(require_authed),
     db: Session = Depends(get_db),
 ):
+    # 非 admin 只能看自己的对话
+    conv = db.query(Conversation).filter(Conversation.id == conversation_id).first()
+    if not conv:
+        raise HTTPException(status_code=404, detail="对话不存在")
+    if user.role != "admin" and conv.user_id != user.id:
+        raise HTTPException(status_code=403, detail="无权查看该对话")
+
     messages = (
         db.query(ChatMessage)
         .filter(ChatMessage.conversation_id == conversation_id)
@@ -344,57 +437,79 @@ async def get_conversation_messages(
 
 @router.get("/stats")
 async def get_stats(
-    admin: User = Depends(require_admin),
+    user: User = Depends(require_authed),
     db: Session = Depends(get_db),
 ):
+    """admin 看全局；manager / buyer 看自己范围内的统计"""
+    is_admin = user.role == "admin"
+
+    # 用户数 / 商品数 全局可见
     total_users = db.query(func.count(User.id)).scalar()
     total_products = db.query(func.count(Product.product_id)).scalar()
-    total_conversations = db.query(func.count(Conversation.id)).scalar()
-    total_messages = db.query(func.count(ChatMessage.id)).scalar()
 
-    # 今日对话数
+    # 对话 / 消息 / token：非 admin 只看自己的
+    conv_q = db.query(func.count(Conversation.id))
+    if not is_admin:
+        conv_q = conv_q.filter(Conversation.user_id == user.id)
+    total_conversations = conv_q.scalar()
+
+    msg_base = db.query(ChatMessage)
+    if not is_admin:
+        msg_base = msg_base.join(
+            Conversation, Conversation.id == ChatMessage.conversation_id
+        ).filter(Conversation.user_id == user.id)
+    total_messages = msg_base.with_entities(func.count(ChatMessage.id)).scalar()
+    total_tokens = msg_base.with_entities(func.sum(ChatMessage.total_tokens)).scalar() or 0
+
+    # 今日对话
     from datetime import date, timedelta
-    today_conversations = (
-        db.query(func.count(Conversation.id))
-        .filter(func.date(Conversation.created_at) == date.today())
-        .scalar()
+    today_q = db.query(func.count(Conversation.id)).filter(
+        func.date(Conversation.created_at) == date.today()
     )
+    if not is_admin:
+        today_q = today_q.filter(Conversation.user_id == user.id)
+    today_conversations = today_q.scalar()
 
-    # 总 Token 消耗
-    total_tokens = db.query(func.sum(ChatMessage.total_tokens)).scalar() or 0
+    def daily(field_metric, base_query):
+        results = []
+        for i in range(6, -1, -1):
+            d = date.today() - timedelta(days=i)
+            q = base_query
+            if field_metric == "count_conv":
+                v = q.filter(func.date(Conversation.created_at) == d).with_entities(
+                    func.count(Conversation.id)
+                ).scalar()
+            elif field_metric == "count_msg":
+                v = q.filter(func.date(ChatMessage.created_at) == d).with_entities(
+                    func.count(ChatMessage.id)
+                ).scalar()
+            elif field_metric == "sum_tokens":
+                v = q.filter(func.date(ChatMessage.created_at) == d).with_entities(
+                    func.sum(ChatMessage.total_tokens)
+                ).scalar() or 0
+            results.append((d, int(v or 0)))
+        return results
 
-    # 近7天每日对话数
-    daily_conversations = []
-    for i in range(6, -1, -1):
-        d = date.today() - timedelta(days=i)
-        count = (
-            db.query(func.count(Conversation.id))
-            .filter(func.date(Conversation.created_at) == d)
-            .scalar()
-        )
-        daily_conversations.append({"date": str(d), "count": count})
+    # 准备基础查询
+    base_conv = db.query(Conversation)
+    if not is_admin:
+        base_conv = base_conv.filter(Conversation.user_id == user.id)
 
-    # 近7天每日 Token 消耗
-    daily_tokens = []
-    for i in range(6, -1, -1):
-        d = date.today() - timedelta(days=i)
-        tokens = (
-            db.query(func.sum(ChatMessage.total_tokens))
-            .filter(func.date(ChatMessage.created_at) == d)
-            .scalar()
-        ) or 0
-        daily_tokens.append({"date": str(d), "tokens": int(tokens)})
+    base_msg = db.query(ChatMessage)
+    if not is_admin:
+        base_msg = base_msg.join(
+            Conversation, Conversation.id == ChatMessage.conversation_id
+        ).filter(Conversation.user_id == user.id)
 
-    # 近7天每日消息数
-    daily_messages = []
-    for i in range(6, -1, -1):
-        d = date.today() - timedelta(days=i)
-        count = (
-            db.query(func.count(ChatMessage.id))
-            .filter(func.date(ChatMessage.created_at) == d)
-            .scalar()
-        )
-        daily_messages.append({"date": str(d), "count": count})
+    daily_conversations = [
+        {"date": str(d), "count": v} for d, v in daily("count_conv", base_conv)
+    ]
+    daily_messages = [
+        {"date": str(d), "count": v} for d, v in daily("count_msg", base_msg)
+    ]
+    daily_tokens = [
+        {"date": str(d), "tokens": v} for d, v in daily("sum_tokens", base_msg)
+    ]
 
     return {
         "total_users": total_users,
@@ -406,4 +521,5 @@ async def get_stats(
         "daily_conversations": daily_conversations,
         "daily_tokens": daily_tokens,
         "daily_messages": daily_messages,
+        "scope": "all" if is_admin else "self",
     }

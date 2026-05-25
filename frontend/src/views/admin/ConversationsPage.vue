@@ -1,9 +1,9 @@
 <template>
   <div class="admin-page">
-    <h2>对话记录</h2>
+    <h2>{{ isAdmin ? "对话记录" : "我的对话记录" }}</h2>
     <el-table :data="convList" stripe style="width: 100%">
-      <el-table-column prop="user_id" label="用户ID" min-width="70" />
-      <el-table-column prop="user_name" label="用户" min-width="100" />
+      <el-table-column v-if="isAdmin" prop="user_id" label="用户ID" min-width="70" />
+      <el-table-column v-if="isAdmin" prop="user_name" label="用户" min-width="100" />
       <el-table-column prop="title" label="标题" min-width="180" />
       <el-table-column prop="message_count" label="消息数" min-width="80" />
       <el-table-column prop="token_count" label="Token消耗" min-width="100">
@@ -58,11 +58,14 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from "vue"
+import { ref, computed, onMounted } from "vue"
 import MarkdownIt from "markdown-it"
 import request from "../../api/request"
 
 const md = new MarkdownIt({ html: false, breaks: true, linkify: true })
+
+const currentUser = JSON.parse(localStorage.getItem("user") || '{"role":""}')
+const isAdmin = computed(() => currentUser.role === "admin")
 
 const convList = ref<any[]>([])
 const total = ref(0)
@@ -103,23 +106,6 @@ async function viewConversation(id: string) {
   height: 100%;
   overflow-y: auto;
   padding: 0 4px;
-}
-
-.conv-messages::-webkit-scrollbar {
-  width: 5px;
-}
-
-.conv-messages::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.conv-messages::-webkit-scrollbar-thumb {
-  background: #e4e7ed;
-  border-radius: 3px;
-}
-
-.conv-messages::-webkit-scrollbar-thumb:hover {
-  background: #c0c4cc;
 }
 
 .conv-msg {
