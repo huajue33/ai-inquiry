@@ -92,6 +92,35 @@ def get_latest_price(db: Session, product_id: int, as_of_date: date = None) -> O
     return query.order_by(desc(Price.price_date)).first()
 
 
+def get_latest_prices_batch(db: Session, product_ids: list[int]) -> dict[int, Price]:
+    """
+    批量获取多个产品的最新价格（解决 N+1 问题）
+    返回 {product_id: Price} 字典
+    """
+    if not product_ids:
+        return {}
+
+    # 子查询：每个产品的最新日期
+    latest_date_sub = (
+        db.query(Price.product_id, func.max(Price.price_date).label("max_date"))
+        .filter(Price.product_id.in_(product_ids))
+        .group_by(Price.product_id)
+        .subquery()
+    )
+
+    # JOIN 取完整记录
+    prices = (
+        db.query(Price)
+        .join(latest_date_sub, and_(
+            Price.product_id == latest_date_sub.c.product_id,
+            Price.price_date == latest_date_sub.c.max_date,
+        ))
+        .all()
+    )
+
+    return {p.product_id: p for p in prices}
+
+
 def get_price_trend(db: Session, product_id: int, days: int = 7) -> list[dict]:
     """
     获取价格趋势（带向后填充）

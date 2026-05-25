@@ -144,18 +144,20 @@ def _load_chat_history(conversation_id: str, max_turns: int = 5, max_tokens: int
 
     db = SessionLocal()
     try:
+        # 直接用 LIMIT 取最近的消息，避免加载全部历史
         messages = (
             db.query(ChatMessageModel)
             .filter(ChatMessageModel.conversation_id == conversation_id)
-            .order_by(ChatMessageModel.created_at)
+            .order_by(ChatMessageModel.created_at.desc())
+            .limit(max_turns * 2)
             .all()
         )
 
         if not messages:
             return []
 
-        # 取最近 max_turns * 2 条
-        recent = messages[-(max_turns * 2):]
+        # 反转回时间正序
+        recent = list(reversed(messages))
 
         # 从后往前累计，超出预算则截断
         history = []

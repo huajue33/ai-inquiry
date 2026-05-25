@@ -1,8 +1,12 @@
+from contextvars import ContextVar
+from typing import Optional, List
+
 from langchain_core.tools import tool
 from app.database import SessionLocal
 from app.services.price_service import (
     search_products,
     get_latest_price,
+    get_latest_prices_batch,
     get_price_trend,
     get_price_ranking,
     group_products_for_clarify,
@@ -13,6 +17,33 @@ from app.core.permissions import (
     intersect_category_ids,
 )
 
+# ===== 权限缓存（同一请求内不重复查数据库） =====
+_allowed_ids_cache: ContextVar[Optional[List[int]]] = ContextVar("_allowed_ids_cache", default=None)
+_allowed_ids_loaded: ContextVar[bool] = ContextVar("_allowed_ids_loaded", default=False)
+
+
+def reset_permission_cache():
+    """在请求开始时重置缓存（由 chat.py 调用）"""
+    _allowed_ids_cache.set(None)
+    _allowed_ids_loaded.set(False)
+
+
+def _get_allowed_ids_cached(db) -> Optional[List[int]]:
+    """带缓存的权限查询，同一请求内只查一次数据库"""
+    if _allowed_ids_loaded.get():
+        return _allowed_ids_cache.get()
+
+    user = get_current_user_from_context()
+    if user is None:
+        _allowed_ids_loaded.set(True)
+        _allowed_ids_cache.set(None)
+        return None
+
+    allowed = get_allowed_category_ids(db, user)
+    _allowed_ids_loaded.set(True)
+    _allowed_ids_cache.set(allowed)
+    return allowed
+
 
 def _resolve_category_ids(db, requested_ids):
     """根据当前请求用户，返回最终允许查询的分类 ID。
@@ -22,12 +53,7 @@ def _resolve_category_ids(db, requested_ids):
     - final_ids=[]   表示用户没有任何可访问分类，调用方应直接返回提示
     - denied=True    表示用户对"显式请求的分类"无权限
     """
-    user = get_current_user_from_context()
-    if user is None:
-        # 兜底：没有用户上下文时按无限制处理（理论上不该走到这里）
-        return requested_ids, False
-
-    allowed = get_allowed_category_ids(db, user)
+    allowed = _get_allowed_ids_cached(db)
     final_ids = intersect_category_ids(allowed, requested_ids)
 
     # 用户主动指定了分类但被权限砍成空列表 → 视为越权
@@ -35,19 +61,45 @@ def _resolve_category_ids(db, requested_ids):
     return final_ids, denied
 
 
+def _expand_category_ids(db, category_name: str) -> Optional[List[int]]:
+    """一次性查询分类名匹配的所有层级 ID（替代 3 次串行查询）"""
+    from app.models.product import Category
+
+    # 先找匹配的分类
+    matched = db.query(Category).filter(Category.name.like(f"%{category_name}%")).all()
+    if not matched:
+        return None
+
+    matched_ids = set(c.id for c in matched)
+
+    # 一次性加载所有分类，在内存中展开子树
+    all_cats = db.query(Category).all()
+    parent_map = {}  # parent_id → [child_ids]
+    for c in all_cats:
+        if c.parent_id:
+            parent_map.setdefault(c.parent_id, []).append(c.id)
+
+    # BFS 展开所有子孙
+    result_ids = set(matched_ids)
+    queue = list(matched_ids)
+    while queue:
+        pid = queue.pop(0)
+        children = parent_map.get(pid, [])
+        for cid in children:
+            if cid not in result_ids:
+                result_ids.add(cid)
+                queue.append(cid)
+
+    return list(result_ids)
+
+
 @tool
 def query_latest_price(product_name: str, brand: str = "", category: str = "", quality: str = "") -> str:
     """查询产品最新价格。参数：product_name(产品名称关键词或产品ID), brand(品牌,可选), category(分类,可选), quality(品质,可选)"""
     db = SessionLocal()
     try:
-        from app.models.product import Category as CatModel
-
-        # 如果指定了分类，先查分类 ID
-        requested_category_ids = None
-        if category:
-            cats = db.query(CatModel).filter(CatModel.name.like(f"%{category}%")).all()
-            if cats:
-                requested_category_ids = [c.id for c in cats]
+        # 如果指定了分类，展开到所有子分类
+        requested_category_ids = _expand_category_ids(db, category) if category else None
 
         # 与用户被授权的分类求交集
         category_ids, denied = _resolve_category_ids(db, requested_category_ids)
@@ -79,10 +131,13 @@ def query_latest_price(product_name: str, brand: str = "", category: str = "", q
             group_text = "\n".join([f"- {g['name']}（{g['count']}个产品）" for g in groups])
             return f"搜索'{product_name}'找到{len(products)}个产品，种类较多，请选择具体类型：\n{group_text}"
 
-        # 即使结果较多（20-50条），也直接返回前10条价格，不再触发追问循环
+        # 批量获取前 10 个产品的最新价格（1 次 SQL 替代 10 次）
+        top_products = products[:10]
+        price_map = get_latest_prices_batch(db, [p.product_id for p in top_products])
+
         results = []
-        for p in products[:10]:
-            price = get_latest_price(db, p.product_id)
+        for p in top_products:
+            price = price_map.get(p.product_id)
             if price:
                 results.append({
                     "product_id": p.product_id,
@@ -126,7 +181,6 @@ def query_price_trend(product_name: str, days: int = 7) -> str:
             return f"未找到包含'{product_name}'的产品（或无权访问）。建议尝试更短的关键词或产品别名。"
 
         product = products[0]
-        # 使用带向后填充的趋势查询
         trend_data = get_price_trend(db, product.product_id, days)
 
         if not trend_data:
@@ -155,22 +209,8 @@ def query_price_ranking(direction: str = "rise", category: str = "", limit: int 
     """查询价格涨跌排行。参数：direction(rise涨/fall跌), category(分类,可选), limit(数量,默认10)"""
     db = SessionLocal()
     try:
-        from app.models.product import Category
-
-        requested_category_ids = None
-        if category:
-            cats = db.query(Category).filter(Category.name.like(f"%{category}%")).all()
-            if cats:
-                requested_category_ids = [c.id for c in cats]
-                # 也包含子分类
-                child_cats = db.query(Category).filter(Category.parent_id.in_(requested_category_ids)).all()
-                if child_cats:
-                    requested_category_ids.extend([c.id for c in child_cats])
-                    grandchild_cats = db.query(Category).filter(
-                        Category.parent_id.in_([c.id for c in child_cats])
-                    ).all()
-                    if grandchild_cats:
-                        requested_category_ids.extend([c.id for c in grandchild_cats])
+        # 一次性展开分类（替代 3 次串行查询）
+        requested_category_ids = _expand_category_ids(db, category) if category else None
 
         category_ids, denied = _resolve_category_ids(db, requested_category_ids)
         if denied:
@@ -204,20 +244,30 @@ def compare_products(product_names: list[str], compare_type: str = "brand") -> s
         if category_ids == []:
             return "你当前没有任何分类的查看权限，请联系管理员授权。"
 
-        all_results = []
+        # 搜索所有产品
+        all_products = []
         for name in product_names:
             products = search_products(db, name, category_ids=category_ids, limit=5)
-            for p in products:
-                price = get_latest_price(db, p.product_id)
-                if price:
-                    all_results.append({
-                        "product_id": p.product_id,
-                        "name": p.product_name,
-                        "brand": p.brand,
-                        "quality": p.quality,
-                        "price": float(price.price_value),
-                        "unit": price.price_unit,
-                    })
+            all_products.extend(products)
+
+        if not all_products:
+            return "未找到可对比的产品价格数据（或无权访问）。建议尝试更具体的产品名称。"
+
+        # 批量获取价格（1 次 SQL 替代 N 次）
+        price_map = get_latest_prices_batch(db, [p.product_id for p in all_products])
+
+        all_results = []
+        for p in all_products:
+            price = price_map.get(p.product_id)
+            if price:
+                all_results.append({
+                    "product_id": p.product_id,
+                    "name": p.product_name,
+                    "brand": p.brand,
+                    "quality": p.quality,
+                    "price": float(price.price_value),
+                    "unit": price.price_unit,
+                })
 
         if not all_results:
             return "未找到可对比的产品价格数据（或无权访问）。建议尝试更具体的产品名称。"
@@ -254,10 +304,11 @@ def clarify_product(keyword: str, max_groups: int = 5) -> str:
             return f"未找到包含'{keyword}'的产品（或无权访问）。建议尝试更短的关键词。"
 
         if len(products) <= 10:
-            # 结果不多，直接返回价格
+            # 批量获取价格
+            price_map = get_latest_prices_batch(db, [p.product_id for p in products])
             results = []
             for p in products:
-                price = get_latest_price(db, p.product_id)
+                price = price_map.get(p.product_id)
                 if price:
                     brand_str = f"[{p.brand}]" if p.brand else ""
                     results.append(f"{brand_str}{p.product_name}{{#id={p.product_id}}} - {float(price.price_value)}元/{price.price_unit}")

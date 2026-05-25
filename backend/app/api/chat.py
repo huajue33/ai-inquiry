@@ -8,6 +8,7 @@ from app.services import ai_service
 from app.models.user import User
 from app.core.security import get_current_user
 from app.core.permissions import current_user_var
+from app.tools.price_tools import reset_permission_cache
 
 router = APIRouter()
 
@@ -19,6 +20,7 @@ async def chat(request: ChatRequest, user: User = Depends(get_current_user)):
 
     # 注入当前用户到 ContextVar，供 LangChain tools 同步函数读取
     token = current_user_var.set(user)
+    reset_permission_cache()
     try:
         result = await ai_service.chat(request.message, conversation_id)
     finally:
@@ -41,6 +43,7 @@ async def chat_stream(request: ChatRequest, user: User = Depends(get_current_use
     # 需要在生成器内部重新 set 一次 ContextVar）
     async def event_generator():
         token = current_user_var.set(user)
+        reset_permission_cache()
         try:
             async for chunk in ai_service.chat_stream(
                 request.message, conversation_id, request.enable_thinking
