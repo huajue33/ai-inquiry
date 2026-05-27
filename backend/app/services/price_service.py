@@ -1,4 +1,3 @@
-from typing import Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import func, desc, and_, or_
 from datetime import date, timedelta
@@ -12,7 +11,14 @@ logger = logging.getLogger(__name__)
 
 def search_products(db: Session, keyword: str, category_ids: list[int] = None, limit: int = 50):
     """
-    搜索产品 - 支持 ID 搜索、Meilisearch、MySQL LIKE
+    搜索产品 - 多策略：ID 精确 → 分类名精确联想 → Meilisearch → MySQL LIKE
+
+    分类联想的设计：
+    - 当关键词与某个**叶子分类**（level=3）的名字精确等价（包含同义词），
+      认为用户想要的是"这个品类的所有产品"，把搜索强制限定到该分类子树。
+    - 这样搜"土豆"会被锁在"蔬菜水果 > 根茎类 > 土豆"分类下，不会泄漏到
+      "调味品 > 淀粉/调理粉 > 生粉/马铃薯淀粉"等含"马铃薯"字眼的分类。
+    - 同义词通过 _CATEGORY_ALIASES 维护（如"马铃薯""洋芋"映射到"土豆"分类）。
 
     Returns:
         Product ORM 对象列表
@@ -21,33 +27,118 @@ def search_products(db: Session, keyword: str, category_ids: list[int] = None, l
     if not keyword:
         return []
 
-    # 如果关键词是纯数字，尝试按 product_id 精确查找
+    # 1. 纯数字 → 按 product_id 精确查找
     if keyword.isdigit():
         product = db.query(Product).filter(Product.product_id == int(keyword)).first()
         if product:
             return [product]
 
-    # 优先尝试 Meilisearch
+    # 2. 关键词命中叶子分类名 → 限定到该分类子树
+    scoped_category_ids = _resolve_keyword_to_category_subtree(db, keyword)
+    effective_category_ids = _intersect(category_ids, scoped_category_ids)
+
+    # 显式空集（调用方传入分类与子树/权限完全无交集）→ 直接返回空，
+    # 不能丢给下游搜索（下游会把 [] 当作 falsy 进而忽略 filter，等于全库搜）
+    if effective_category_ids == []:
+        return []
+
+    # 3. Meilisearch（带可能的子树过滤）
     try:
         from app.services.search_service import search_products as meili_search
-        hits = meili_search(keyword, category_ids=category_ids, limit=limit)
+        hits = meili_search(keyword, category_ids=effective_category_ids, limit=limit)
         if hits:
-            # 用 product_id 从数据库加载完整 ORM 对象
             product_ids = [h["product_id"] for h in hits]
             products = db.query(Product).filter(Product.product_id.in_(product_ids)).all()
-            # 保持 Meilisearch 的相关度排序
             id_order = {pid: idx for idx, pid in enumerate(product_ids)}
             products.sort(key=lambda p: id_order.get(p.product_id, 999))
             return products
+
+        # Meilisearch 在子树内搜没结果，但子树本身有产品 → 直接返回子树全量
+        # （场景：用户搜"土豆"，叶子分类下产品名里都不含"土豆"两字的极端情况）
+        if scoped_category_ids and not category_ids:
+            products = (
+                db.query(Product)
+                .filter(Product.category_id.in_(scoped_category_ids))
+                .limit(limit)
+                .all()
+            )
+            if products:
+                return products
     except Exception as e:
         logger.warning(f"Meilisearch 搜索失败，降级到 MySQL: {e}")
 
-    # Fallback: MySQL LIKE 搜索
-    return _search_mysql(db, keyword, category_ids, limit)
+    # 4. Fallback: MySQL LIKE
+    return _search_mysql(db, keyword, effective_category_ids, limit)
+
+
+# ===== 关键词 → 分类子树 联想 =====
+
+# 关键词到"规范分类名关键字"的别名表（用户常用别名 → 标准品类名）
+# value 会用 LIKE 去 categories.name 模糊匹配，所以填核心词即可。
+_CATEGORY_ALIASES: dict[str, str] = {
+    "马铃薯": "土豆",
+    "洋芋": "土豆",
+    "西红柿": "番茄",
+}
+
+
+def _resolve_keyword_to_category_subtree(db: Session, keyword: str) -> list[int] | None:
+    """
+    若 keyword 精确匹配某个叶子分类名（或通过别名映射后匹配），
+    返回该分类（含其子树）的 ID 集合；否则返回 None。
+
+    只匹配叶子分类（即没有子分类的分类），避免"蔬菜""调味品"这种顶层词
+    把范围拉得太大；用户搜顶层词时应走正常的全文搜索 + 分组提示。
+    """
+    canonical = _CATEGORY_ALIASES.get(keyword, keyword)
+
+    # 找名字等于 canonical 的分类
+    matched = (
+        db.query(Category)
+        .filter(Category.name == canonical)
+        .all()
+    )
+    if not matched:
+        return None
+
+    # 收集每个匹配分类的子树 ID（含自身）
+    all_cats = db.query(Category).all()
+    parent_to_children: dict[int, list[int]] = {}
+    for c in all_cats:
+        if c.parent_id:
+            parent_to_children.setdefault(c.parent_id, []).append(c.id)
+
+    result_ids: set[int] = set()
+    for cat in matched:
+        result_ids.add(cat.id)
+        queue = [cat.id]
+        while queue:
+            pid = queue.pop(0)
+            for cid in parent_to_children.get(pid, []):
+                if cid not in result_ids:
+                    result_ids.add(cid)
+                    queue.append(cid)
+
+    # 只在"叶子分类匹配"或"匹配的分类是非顶层"时生效
+    # 一级分类（level=1）的名字（如"蔬菜水果""调味品"）不该走这个路径，
+    # 因为它会把整个一级分类锁住，反而影响正常全文搜索。
+    if all(c.level == 1 for c in matched):
+        return None
+
+    return list(result_ids)
+
+
+def _intersect(a: list[int] | None, b: list[int] | None) -> list[int] | None:
+    """两个分类 ID 列表求交集；任一为 None 表示不限制，返回另一个。"""
+    if a is None:
+        return b
+    if b is None:
+        return a
+    return list(set(a) & set(b))
 
 
 def _search_mysql(db: Session, keyword: str, category_ids: list[int] = None, limit: int = 50):
-    """MySQL LIKE 降级搜索"""
+    """MySQL LIKE 降级搜索（分类联想已在主路径完成，这里只做朴素 LIKE）"""
     query = db.query(Product).filter(
         or_(
             Product.product_name.like(f"%{keyword}%"),
@@ -58,52 +149,32 @@ def _search_mysql(db: Session, keyword: str, category_ids: list[int] = None, lim
     )
     if category_ids:
         query = query.filter(Product.category_id.in_(category_ids))
-    results = query.limit(limit).all()
-
-    # 如果没结果，尝试分类联想
-    if not results:
-        matched_cats = db.query(Category).filter(Category.name.like(f"%{keyword}%")).all()
-        if matched_cats:
-            cat_ids = set()
-            for cat in matched_cats:
-                cat_ids.add(cat.id)
-                children = db.query(Category).filter(Category.parent_id == cat.id).all()
-                for child in children:
-                    cat_ids.add(child.id)
-                    grandchildren = db.query(Category).filter(Category.parent_id == child.id).all()
-                    for gc in grandchildren:
-                        cat_ids.add(gc.id)
-            if category_ids:
-                cat_ids = cat_ids.intersection(set(category_ids))
-            if cat_ids:
-                results = db.query(Product).filter(Product.category_id.in_(cat_ids)).limit(limit).all()
-
-    return results
+    return query.limit(limit).all()
 
 
-def get_latest_price(db: Session, product_id: int, as_of_date: date = None) -> Optional[Price]:
+def get_latest_prices_batch(
+    db: Session,
+    product_ids: list[int],
+    as_of_date: date = None,
+) -> dict[int, Price]:
     """
-    获取产品最新价格（向后填充逻辑）
-    如果指定了 as_of_date，返回该日期或之前最近的价格记录
-    """
-    query = db.query(Price).filter(Price.product_id == product_id)
-    if as_of_date:
-        query = query.filter(Price.price_date <= as_of_date)
-    return query.order_by(desc(Price.price_date)).first()
+    批量获取多个产品在指定日期的有效价格（解决 N+1 问题）。
 
-
-def get_latest_prices_batch(db: Session, product_ids: list[int]) -> dict[int, Price]:
-    """
-    批量获取多个产品的最新价格（解决 N+1 问题）
-    返回 {product_id: Price} 字典
+    指定 as_of_date 时返回该日及之前最近一条；不指定时返回最新一条。
+    返回 {product_id: Price} 字典。
     """
     if not product_ids:
         return {}
 
-    # 子查询：每个产品的最新日期
+    base_query = db.query(Price).filter(Price.product_id.in_(product_ids))
+    if as_of_date is not None:
+        base_query = base_query.filter(Price.price_date <= as_of_date)
+
+    # 子查询：每个产品在限定日期范围内的最新日期
     latest_date_sub = (
-        db.query(Price.product_id, func.max(Price.price_date).label("max_date"))
-        .filter(Price.product_id.in_(product_ids))
+        base_query.with_entities(
+            Price.product_id, func.max(Price.price_date).label("max_date")
+        )
         .group_by(Price.product_id)
         .subquery()
     )
@@ -186,36 +257,76 @@ def get_price_trend(db: Session, product_id: int, days: int = 7) -> list[dict]:
     return result
 
 
-def get_price_trend_raw(db: Session, product_id: int, days: int = 7) -> list[Price]:
-    """获取原始价格记录（不填充），用于兼容旧逻辑"""
-    start_date = date.today() - timedelta(days=days)
-    return (
-        db.query(Price)
-        .filter(Price.product_id == product_id, Price.price_date >= start_date)
-        .order_by(Price.price_date)
-        .all()
-    )
-
-
-def get_price_ranking(db: Session, direction: str = "rise", category_ids: list[int] = None, limit: int = 10):
+def get_price_ranking(
+    db: Session,
+    direction: str = "rise",
+    category_ids: list[int] = None,
+    limit: int = 10,
+    as_of: date = None,
+):
     """
-    涨跌排行：对比最新日期和前一个有数据的日期
-    """
-    latest_date_sub = db.query(func.max(Price.price_date)).scalar_subquery()
-    prev_date_sub = (
-        db.query(func.max(Price.price_date))
-        .filter(Price.price_date < latest_date_sub)
-        .scalar_subquery()
-    )
+    涨跌排行：对比 as_of 当天和前一天的有效价（默认 as_of=今天）。
 
-    latest_prices = (
-        db.query(Price.product_id, Price.price_value.label("latest_price"))
-        .filter(Price.price_date == latest_date_sub)
+    生鲜价格不是每天更新，所以两端各自向前回溯到 ≤ 该日的最近一条记录：
+      - to_price   = 截至 as_of   的最近一条
+      - from_price = 截至 as_of-1 的最近一条
+    若两端取到的是同一条记录（即从 as_of-1 到 as_of 之间该产品无新报价），
+    不计入排行——这与"价格无变化"是不同的：两条独立记录碰巧同价仍会保留。
+
+    Returns:
+        (rows, compare) 元组：
+        - rows: list of (product_id, name, prev_price, latest_price, change_pct, unit)
+        - compare: dict {"from": date, "to": date}，对比的两个日期（即 as_of-1 和 as_of）
+    """
+    if as_of is None:
+        as_of = date.today()
+    to_date = as_of
+    from_date = as_of - timedelta(days=1)
+
+    # 各自向前回溯的最近日期（per product）
+    to_sub = (
+        db.query(
+            Price.product_id,
+            func.max(Price.price_date).label("d"),
+        )
+        .filter(Price.price_date <= to_date)
+        .group_by(Price.product_id)
         .subquery()
     )
-    prev_prices = (
-        db.query(Price.product_id, Price.price_value.label("prev_price"))
-        .filter(Price.price_date == prev_date_sub)
+    from_sub = (
+        db.query(
+            Price.product_id,
+            func.max(Price.price_date).label("d"),
+        )
+        .filter(Price.price_date <= from_date)
+        .group_by(Price.product_id)
+        .subquery()
+    )
+
+    # JOIN 拿到两端完整 Price 行（含 price_value、price_unit）
+    to_price = (
+        db.query(
+            Price.product_id,
+            Price.price_value.label("latest_price"),
+            Price.price_unit.label("unit"),
+            Price.price_date.label("to_date"),
+        )
+        .join(to_sub, and_(
+            Price.product_id == to_sub.c.product_id,
+            Price.price_date == to_sub.c.d,
+        ))
+        .subquery()
+    )
+    from_price = (
+        db.query(
+            Price.product_id,
+            Price.price_value.label("prev_price"),
+            Price.price_date.label("from_date"),
+        )
+        .join(from_sub, and_(
+            Price.product_id == from_sub.c.product_id,
+            Price.price_date == from_sub.c.d,
+        ))
         .subquery()
     )
 
@@ -223,33 +334,37 @@ def get_price_ranking(db: Session, direction: str = "rise", category_ids: list[i
         db.query(
             Product.product_id,
             Product.product_name,
-            prev_prices.c.prev_price,
-            latest_prices.c.latest_price,
+            from_price.c.prev_price,
+            to_price.c.latest_price,
+            to_price.c.unit,
         )
-        .join(latest_prices, Product.product_id == latest_prices.c.product_id)
-        .join(prev_prices, Product.product_id == prev_prices.c.product_id)
-        .filter(prev_prices.c.prev_price > 0)
+        .join(to_price, Product.product_id == to_price.c.product_id)
+        .join(from_price, Product.product_id == from_price.c.product_id)
+        .filter(from_price.c.prev_price > 0)
+        # 排除"两端取到同一条记录"的情况（区间内无新报价 → 不该上榜）
+        # 注意是判记录日期相同，不是价格相同——两条独立记录恰好同价应保留
+        .filter(to_price.c.to_date != from_price.c.from_date)
     )
 
     if category_ids:
         query = query.filter(Product.category_id.in_(category_ids))
 
+    change_expr = (
+        (to_price.c.latest_price - from_price.c.prev_price) / from_price.c.prev_price
+    )
     if direction == "rise":
-        query = query.order_by(desc(
-            (latest_prices.c.latest_price - prev_prices.c.prev_price) / prev_prices.c.prev_price
-        ))
+        query = query.order_by(desc(change_expr))
     else:
-        query = query.order_by(
-            (latest_prices.c.latest_price - prev_prices.c.prev_price) / prev_prices.c.prev_price
-        )
+        query = query.order_by(change_expr)
 
     rows = query.limit(limit).all()
 
     results = []
-    for pid, name, prev, latest in rows:
+    for pid, name, prev, latest, unit in rows:
         change_pct = (float(latest) - float(prev)) / float(prev) * 100
-        results.append((pid, name, prev, latest, change_pct))
-    return results
+        results.append((pid, name, prev, latest, change_pct, unit or ""))
+
+    return results, {"from": from_date, "to": to_date}
 
 
 def group_products_for_clarify(products: list, max_groups: int = 5) -> list[dict]:

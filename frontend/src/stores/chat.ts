@@ -1,6 +1,6 @@
 import { defineStore } from "pinia"
 import { ref, reactive, computed } from "vue"
-import type { ChatMessage } from "../types/card"
+import type { ChatMessage } from "../types/message"
 import {
   getConversations,
   getConversation,
@@ -89,7 +89,6 @@ export const useChatStore = defineStore("chat", () => {
         role: msg.role as "user" | "assistant",
         content: msg.content,
         thinking: msg.thinking || undefined,
-        cards: msg.cards || [],
         suggestions: msg.suggestions || [],
         duration: msg.duration || undefined,
         timestamp: new Date(msg.created_at).getTime(),
@@ -123,7 +122,6 @@ export const useChatStore = defineStore("chat", () => {
         role: msg.role,
         content: msg.content,
         thinking: msg.thinking,
-        cards: msg.cards,
         suggestions: msg.suggestions,
         duration: msg.duration,
         prompt_tokens: msg.prompt_tokens || 0,
@@ -203,10 +201,6 @@ export const useChatStore = defineStore("chat", () => {
     conversationId.value = id
   }
 
-  function clearMessages() {
-    conversationId.value = ""
-  }
-
   // 检查某个对话是否正在加载
   function isConversationLoading(id: string): boolean {
     return conversationStates.has(id) && conversationStates.get(id)!.loading
@@ -237,6 +231,5 @@ export const useChatStore = defineStore("chat", () => {
     setToolStatus,
     setEnableThinking,
     setConversationId,
-    clearMessages,
   }
 })

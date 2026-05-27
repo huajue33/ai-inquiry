@@ -31,7 +31,6 @@ class MessageItem(BaseModel):
     role: str
     content: str
     thinking: Optional[str] = None
-    cards: list = []
     suggestions: list = []
     duration: Optional[int] = None
     created_at: str
@@ -52,7 +51,6 @@ class SaveMessageRequest(BaseModel):
     role: str
     content: str
     thinking: Optional[str] = None
-    cards: list = []
     suggestions: list = []
     duration: Optional[int] = None
     prompt_tokens: int = 0
@@ -159,7 +157,6 @@ async def get_conversation(
                 role=msg.role,
                 content=msg.content or "",
                 thinking=msg.thinking,
-                cards=msg.cards_json or [],
                 suggestions=msg.suggestions_json or [],
                 duration=msg.duration,
                 created_at=str(msg.created_at),
@@ -239,7 +236,6 @@ async def save_message(
         role=request.role,
         content=request.content,
         thinking=request.thinking,
-        cards_json=request.cards if request.cards else None,
         suggestions_json=request.suggestions if request.suggestions else None,
         duration=request.duration,
         prompt_tokens=request.prompt_tokens,

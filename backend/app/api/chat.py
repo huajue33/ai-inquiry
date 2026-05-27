@@ -3,7 +3,7 @@ import uuid
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 
-from app.schemas.chat import ChatRequest, ChatResponse
+from app.schemas.chat import ChatRequest
 from app.services import ai_service
 from app.models.user import User
 from app.core.security import get_current_user
@@ -11,27 +11,6 @@ from app.core.permissions import current_user_var
 from app.tools.price_tools import reset_permission_cache
 
 router = APIRouter()
-
-
-@router.post("/", response_model=ChatResponse)
-async def chat(request: ChatRequest, user: User = Depends(get_current_user)):
-    """非流式接口"""
-    conversation_id = request.conversation_id or str(uuid.uuid4())
-
-    # 注入当前用户到 ContextVar，供 LangChain tools 同步函数读取
-    token = current_user_var.set(user)
-    reset_permission_cache()
-    try:
-        result = await ai_service.chat(request.message, conversation_id)
-    finally:
-        current_user_var.reset(token)
-
-    return ChatResponse(
-        reply=result["reply"],
-        cards=result["cards"],
-        suggestions=result["suggestions"],
-        conversation_id=conversation_id,
-    )
 
 
 @router.post("/stream")

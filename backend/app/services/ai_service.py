@@ -1,4 +1,5 @@
 import json
+from datetime import date
 from typing import AsyncGenerator, Optional
 
 from openai import AsyncOpenAI
@@ -9,20 +10,16 @@ from langchain_core.messages import HumanMessage, AIMessage
 
 from app.config import get_settings
 from app.core.prompts import SYSTEM_PROMPT
-from app.core.permissions import (
-    current_user_var,
-    get_allowed_category_ids,
-)
+from app.core.permissions import current_user_var
 from app.database import SessionLocal
 from app.models.conversation import ChatMessage as ChatMessageModel
 from app.models.product import Category
 from app.models.permission import UserCategoryPermission
 from app.tools.price_tools import (
-    query_latest_price,
-    query_price_trend,
-    query_price_ranking,
-    compare_products,
-    clarify_product,
+    search_products,
+    get_latest_prices,
+    get_price_history,
+    get_price_ranking,
 )
 
 settings = get_settings()
@@ -43,16 +40,15 @@ openai_client = AsyncOpenAI(
 )
 
 tools = [
-    query_latest_price,
-    query_price_trend,
-    query_price_ranking,
-    compare_products,
-    clarify_product,
+    search_products,
+    get_latest_prices,
+    get_price_history,
+    get_price_ranking,
 ]
 
 prompt = ChatPromptTemplate.from_messages([
     ("system", SYSTEM_PROMPT),
-    ("system", "{user_scope}"),
+    ("system", "{runtime_context}"),
     MessagesPlaceholder(variable_name="chat_history", optional=True),
     ("human", "{input}"),
     MessagesPlaceholder(variable_name="agent_scratchpad"),
@@ -69,27 +65,27 @@ agent_executor = AgentExecutor(
 )
 
 
-def _build_user_scope_prompt() -> str:
-    """根据 ContextVar 中的当前用户，构造 "你能查的分类" 系统提示。
+def _build_runtime_context() -> str:
+    """构造运行时上下文（当前日期 + 用户权限范围）。
 
-    返回示例：
-      - admin/manager: "当前用户角色 admin，可访问全部分类。"
-      - buyer 有授权: "当前用户为采购员，仅可访问以下二级分类：叶菜类、根茎类。
-                    其他分类（如 调味品-食用油）请直接回复"无权访问"，不要尝试搜索。"
-      - buyer 无授权: "当前用户没有任何分类的查看权限，请直接告知用户联系管理员。"
+    每次请求都会重新构造一次，确保模型拿到的是最新日期。
+    权限校验由工具层兜底，prompt 里只需让 LLM 知道自己在什么范围内工作。
     """
+    today = date.today()
+    weekday = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"][today.weekday()]
+    date_line = f"当前日期：{today.isoformat()}（{weekday}）。"
+
     user = current_user_var.get()
     if user is None:
-        return "当前匿名访问，无任何数据查询权限。"
+        return date_line + "\n当前匿名访问，没有数据查询权限。"
 
     if user.role in ("admin", "manager"):
-        return f"当前用户角色 {user.role}，可访问全部分类，无数据范围限制。"
+        return date_line + f"\n当前用户角色 {user.role}，可访问全部分类。"
 
     db = SessionLocal()
     try:
-        # 直接读授权的二级分类名（不展开到三级，给 LLM 看更直观）
         rows = (
-            db.query(Category.name, Category.parent_id)
+            db.query(Category.name)
             .join(
                 UserCategoryPermission,
                 UserCategoryPermission.category_id == Category.id,
@@ -99,30 +95,16 @@ def _build_user_scope_prompt() -> str:
         )
         if not rows:
             return (
-                "【重要】当前用户为采购员，但**未被授权任何分类**。"
-                "请直接告知用户：'你当前没有数据查询权限，请联系管理员授权'。"
-                "不要调用任何查询工具。"
+                date_line
+                + f"\n当前用户 {user.real_name}（采购员）未被授权任何分类。"
+                "直接告知用户'你当前没有数据查询权限，请联系管理员授权'，不要调用任何工具。"
             )
 
         allowed = "、".join(r[0] for r in rows)
-
-        # 列出所有二级分类，标出 "未授权" 的
-        all_seconds = (
-            db.query(Category.name)
-            .filter(Category.level == 2)
-            .all()
-        )
-        denied_names = sorted(set(c[0] for c in all_seconds) - set(r[0] for r in rows))
-        denied_str = "、".join(denied_names[:20]) if denied_names else "无"
-
         return (
-            f"【数据权限】当前用户为采购员（{user.real_name}），"
-            f"**仅可访问以下二级分类**：{allowed}。\n"
-            f"**禁止访问**：{denied_str}。\n"
-            "如果用户询问的产品明显属于禁止访问的分类（例如询问"
-            "调味品/食用油/醋/酱油 等而你没有该权限），"
-            "**直接回复 '抱歉，你没有该分类的查询权限，请联系管理员'，不要调用任何工具**。"
-            "如果不确定属于哪个分类，可以调用一次工具试探，但收到 '无权访问' 后不要重试。"
+            date_line
+            + f"\n当前用户 {user.real_name}（采购员），可访问的二级分类：{allowed}。"
+            "其他分类工具会返回 permission_denied，按错误信息回复即可。"
         )
     finally:
         db.close()
@@ -199,41 +181,6 @@ def _last_tool_observation(intermediate_steps) -> str:
         return ""
 
 
-async def chat(message: str, conversation_id: str) -> dict:
-    """Non-streaming: invoke the agent and return full response."""
-    try:
-        chat_history = _load_chat_history(conversation_id)
-        result = await agent_executor.ainvoke({
-            "input": message,
-            "chat_history": chat_history,
-            "user_scope": _build_user_scope_prompt(),
-        })
-
-        reply = result.get("output") or ""
-        if not reply.strip():
-            # max_iterations 触发或 LLM 没返回内容，用最后一次工具返回兜底
-            fallback = _last_tool_observation(result.get("intermediate_steps", []))
-            reply = fallback or "抱歉，没能从数据库找到匹配的结果。请尝试更具体的产品名或换个问法。"
-
-        suggestions = [
-            "查询今日蔬菜价格",
-            "对比不同品牌食用油价格",
-            "查看近7天鸡蛋价格趋势",
-        ]
-
-        return {
-            "reply": reply,
-            "cards": [],
-            "suggestions": suggestions,
-        }
-    except Exception as e:
-        return {
-            "reply": f"抱歉，处理您的请求时出现了问题：{str(e)}",
-            "cards": [],
-            "suggestions": ["换个问法试试", "查询产品价格", "查看价格趋势"],
-        }
-
-
 async def chat_stream(message: str, conversation_id: str, enable_thinking: bool = False) -> AsyncGenerator[str, None]:
     """
     Streaming with optional thinking mode.
@@ -261,17 +208,15 @@ async def chat_stream(message: str, conversation_id: str, enable_thinking: bool 
 
 async def _stream_normal(message: str, conversation_id: str) -> AsyncGenerator[str, None]:
     """普通流式输出（Agent + 工具调用）"""
-    yield f"data: {json.dumps({'event': 'thinking'}, ensure_ascii=False)}\n\n"
-
     usage_data = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
     chat_history = _load_chat_history(conversation_id)
-    user_scope = _build_user_scope_prompt()
+    runtime_context = _build_runtime_context()
 
     has_emitted_token = False
     last_tool_output = ""
 
     async for event in agent_executor.astream_events(
-        {"input": message, "chat_history": chat_history, "user_scope": user_scope},
+        {"input": message, "chat_history": chat_history, "runtime_context": runtime_context},
         version="v2",
     ):
         kind = event["event"]
@@ -323,7 +268,6 @@ async def _stream_normal(message: str, conversation_id: str) -> AsyncGenerator[s
         "event": "done",
         "data": {
             "suggestions": ["查询今日蔬菜价格", "对比不同品牌食用油价格", "查看近7天鸡蛋价格趋势"],
-            "cards": [],
             "conversation_id": conversation_id,
             "usage": usage_data,
         }
@@ -340,13 +284,13 @@ async def _stream_with_thinking(message: str, conversation_id: str) -> AsyncGene
     yield f"data: {json.dumps({'event': 'tool_start', 'data': '分析问题'}, ensure_ascii=False)}\n\n"
 
     chat_history = _load_chat_history(conversation_id)
-    user_scope = _build_user_scope_prompt()
+    runtime_context = _build_runtime_context()
 
     try:
         agent_result = await agent_executor.ainvoke({
             "input": message,
             "chat_history": chat_history,
-            "user_scope": user_scope,
+            "runtime_context": runtime_context,
         })
         tool_output = agent_result.get("output") or _last_tool_observation(
             agent_result.get("intermediate_steps", [])
@@ -359,7 +303,7 @@ async def _stream_with_thinking(message: str, conversation_id: str) -> AsyncGene
     # 阶段2：用思考模式深度分析
     thinking_prompt = f"""你是一个B端采销询价助手。
 
-{user_scope}
+{runtime_context}
 
 用户问题：{message}
 
@@ -405,7 +349,6 @@ async def _stream_with_thinking(message: str, conversation_id: str) -> AsyncGene
         "event": "done",
         "data": {
             "suggestions": ["查询今日蔬菜价格", "对比不同品牌食用油价格", "查看近7天鸡蛋价格趋势"],
-            "cards": [],
             "conversation_id": conversation_id,
             "usage": usage_data,
         }

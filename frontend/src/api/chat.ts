@@ -1,16 +1,3 @@
-import request from "./request"
-import type { ChatResponse } from "../types/card"
-
-/**
- * 非流式发送消息（兼容）
- */
-export function sendMessage(message: string, conversationId?: string): Promise<ChatResponse> {
-  return request.post("/chat", {
-    message,
-    conversation_id: conversationId,
-  })
-}
-
 /**
  * 流式发送消息（SSE），支持思考模式和中断
  */
@@ -23,7 +10,7 @@ export async function sendMessageStream(
     onThinkingToken?: (token: string) => void
     onToolStart?: (toolName: string) => void
     onToolEnd?: (toolName: string) => void
-    onDone: (data: { suggestions: string[]; cards: any[]; conversation_id: string; usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number } }) => void
+    onDone: (data: { suggestions: string[]; conversation_id: string; usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number } }) => void
     onError: (error: string) => void
   },
   abortSignal?: AbortSignal
@@ -136,8 +123,6 @@ export async function sendMessageStream(
               break
             case "error":
               callbacks.onError(event.data)
-              break
-            case "thinking":
               break
           }
         } catch {

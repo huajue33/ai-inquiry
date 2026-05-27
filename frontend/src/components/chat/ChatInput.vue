@@ -117,7 +117,7 @@ import { useChatStore } from "../../stores/chat"
 import { sendMessageStream } from "../../api/chat"
 import { uuid } from "../../utils/uuid"
 import { useSpeechRecognition } from "../../composables/useSpeechRecognition"
-import type { ChatMessage } from "../../types/card"
+import type { ChatMessage } from "../../types/message"
 
 const chatStore = useChatStore()
 const inputText = ref("")
@@ -240,11 +240,10 @@ function onMicPointerCancel() {
 }
 
 const TOOL_NAMES: Record<string, string> = {
-  query_latest_price: "查询最新价格",
-  query_price_trend: "查询价格趋势",
-  query_price_ranking: "查询涨跌排行",
-  compare_products: "对比产品价格",
-  clarify_product: "分析产品分类",
+  search_products: "搜索商品",
+  get_latest_prices: "查询最新价格",
+  get_price_history: "查询价格趋势",
+  get_price_ranking: "查询涨跌排行",
   "分析问题": "分析问题并查询数据",
 }
 
@@ -290,7 +289,6 @@ async function handleSend() {
     id: Date.now().toString(),
     role: "user",
     content: text,
-    cards: [],
     suggestions: [],
     timestamp: Date.now(),
   }
@@ -309,7 +307,6 @@ async function handleSend() {
     role: "assistant",
     content: "",
     thinking: "",
-    cards: [],
     suggestions: [],
     timestamp: Date.now(),
   }
@@ -340,7 +337,6 @@ async function handleSend() {
         },
         onDone(data) {
           chatStore.updateLastMessage({
-            cards: data.cards || [],
             suggestions: data.suggestions || [],
             duration: Date.now() - startTime,
             prompt_tokens: data.usage?.prompt_tokens || 0,

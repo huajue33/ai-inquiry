@@ -189,7 +189,7 @@ import { Loading, MagicStick, Select, TrendCharts, Search, DataAnalysis } from "
 import * as echarts from "echarts"
 import { useChatStore } from "../../stores/chat"
 import request from "../../api/request"
-import type { ChatMessage } from "../../types/card"
+import type { ChatMessage } from "../../types/message"
 
 const chatStore = useChatStore()
 const listRef = ref<HTMLElement>()

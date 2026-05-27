@@ -21,7 +21,6 @@ class ChatMessage(Base):
     role = Column(Enum("user", "assistant"), nullable=False)
     content = Column(Text, nullable=False, default="")
     thinking = Column(Text)
-    cards_json = Column(JSON)
     suggestions_json = Column(JSON)
     duration = Column(Integer)
     prompt_tokens = Column(Integer, default=0)

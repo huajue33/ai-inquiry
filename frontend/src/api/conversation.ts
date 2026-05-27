@@ -12,7 +12,6 @@ export interface MessageItem {
   role: string
   content: string
   thinking?: string
-  cards: any[]
   suggestions: string[]
   duration?: number
   created_at: string
@@ -43,7 +42,6 @@ export function saveMessage(data: {
   role: string
   content: string
   thinking?: string
-  cards?: any[]
   suggestions?: string[]
   duration?: number
   prompt_tokens?: number
