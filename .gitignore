@@ -27,3 +27,5 @@ Thumbs.db
 # Database dumps（太大不入库，部署时 scp 上传到服务器对应目录）
 *.sql
 mysql/init/*.sql
+
+CLAUDE.md

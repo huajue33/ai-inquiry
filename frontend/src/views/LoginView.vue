@@ -59,6 +59,24 @@
             登录
           </el-button>
         </el-form>
+        <div class="test-accounts">
+          <div class="test-accounts-header">
+            <el-icon :size="14"><InfoFilled /></el-icon>
+            测试账号（密码均为 123456）
+          </div>
+          <div class="test-account-row">
+            <span class="test-account-tag admin">admin</span>
+            <span class="test-account-role">管理员</span>
+          </div>
+          <div class="test-account-row">
+            <span class="test-account-tag manager">test</span>
+            <span class="test-account-role">主管</span>
+          </div>
+          <div class="test-account-row">
+            <span class="test-account-tag buyer">test001</span>
+            <span class="test-account-role">采购员</span>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -67,7 +85,7 @@
 <script setup lang="ts">
 import { ref } from "vue"
 import { useRouter } from "vue-router"
-import { User, Lock, WarningFilled } from "@element-plus/icons-vue"
+import { User, Lock, WarningFilled, InfoFilled } from "@element-plus/icons-vue"
 import request from "../api/request"
 
 const router = useRouter()
@@ -250,6 +268,66 @@ async function handleLogin() {
   border-radius: 10px;
   font-size: 15px;
   margin-top: 8px;
+}
+
+/* Test accounts */
+.test-accounts {
+  margin-top: 24px;
+  padding: 14px 16px;
+  background: #f8f9fc;
+  border-radius: 10px;
+  font-size: 13px;
+}
+
+.test-accounts-header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: #909399;
+  margin-bottom: 10px;
+  font-size: 12px;
+}
+
+.test-account-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.test-account-row:last-child {
+  margin-bottom: 0;
+}
+
+.test-account-tag {
+  display: inline-block;
+  padding: 1px 10px;
+  border-radius: 4px;
+  font-family: monospace;
+  font-size: 12px;
+  font-weight: 600;
+  min-width: 60px;
+  text-align: center;
+}
+
+.test-account-tag.admin {
+  background: #ecf5ff;
+  color: #409eff;
+}
+
+.test-account-tag.manager {
+  background: #fdf6ec;
+  color: #e6a23c;
+}
+
+.test-account-tag.buyer {
+  background: #f0f9eb;
+  color: #67c23a;
+}
+
+.test-account-role {
+  color: #606266;
+  font-size: 12px;
 }
 
 /* ===== Mobile ===== */
