@@ -62,19 +62,20 @@
         <div class="test-accounts">
           <div class="test-accounts-header">
             <el-icon :size="14"><InfoFilled /></el-icon>
-            测试账号（密码均为 123456）
+            测试账号（点击自动填入）
           </div>
-          <div class="test-account-row">
-            <span class="test-account-tag admin">admin</span>
-            <span class="test-account-role">管理员</span>
-          </div>
-          <div class="test-account-row">
-            <span class="test-account-tag manager">test</span>
-            <span class="test-account-role">主管</span>
-          </div>
-          <div class="test-account-row">
-            <span class="test-account-tag buyer">test001</span>
-            <span class="test-account-role">采购员</span>
+          <div
+            class="test-account-row"
+            v-for="acc in testAccounts"
+            :key="acc.username"
+            @click="fillAccount(acc.username, acc.password)"
+          >
+            <span :class="['test-account-tag', acc.role]">{{ acc.username }}</span>
+            <span class="test-account-role">{{ acc.label }}</span>
+            <span class="test-account-pwd">
+              <el-icon :size="12"><Lock /></el-icon>
+              {{ acc.password }}
+            </span>
           </div>
         </div>
       </div>
@@ -93,6 +94,18 @@ const username = ref("")
 const password = ref("")
 const loading = ref(false)
 const errorMsg = ref("")
+
+const testAccounts = [
+  { username: "admin", password: "123456", role: "admin", label: "管理员" },
+  { username: "test", password: "123456", role: "manager", label: "主管" },
+  { username: "test001", password: "123456", role: "buyer", label: "采购员" },
+]
+
+function fillAccount(user: string, pwd: string) {
+  username.value = user
+  password.value = pwd
+  errorMsg.value = ""
+}
 
 async function handleLogin() {
   if (!username.value || !password.value) {
@@ -272,11 +285,12 @@ async function handleLogin() {
 
 /* Test accounts */
 .test-accounts {
-  margin-top: 24px;
-  padding: 14px 16px;
+  margin-top: 28px;
+  padding: 16px 16px 12px;
   background: #f8f9fc;
-  border-radius: 10px;
-  font-size: 13px;
+  border-radius: 12px;
+  border: 1px solid #ebeef5;
+  transition: border-color 0.2s;
 }
 
 .test-accounts-header {
@@ -284,7 +298,7 @@ async function handleLogin() {
   align-items: center;
   gap: 4px;
   color: #909399;
-  margin-bottom: 10px;
+  margin-bottom: 12px;
   font-size: 12px;
 }
 
@@ -292,22 +306,38 @@ async function handleLogin() {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 6px;
+  padding: 7px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  margin-bottom: 4px;
 }
 
 .test-account-row:last-child {
   margin-bottom: 0;
 }
 
+.test-account-row:hover {
+  background: #eef1f6;
+  transform: translateX(2px);
+}
+
+.test-account-row:active {
+  transform: translateX(2px) scale(0.99);
+}
+
 .test-account-tag {
-  display: inline-block;
-  padding: 1px 10px;
-  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px 10px;
+  border-radius: 6px;
   font-family: monospace;
   font-size: 12px;
   font-weight: 600;
   min-width: 60px;
-  text-align: center;
+  height: 24px;
+  letter-spacing: 0.3px;
 }
 
 .test-account-tag.admin {
@@ -328,6 +358,22 @@ async function handleLogin() {
 .test-account-role {
   color: #606266;
   font-size: 12px;
+  flex: 1;
+}
+
+.test-account-pwd {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  color: #c0c4cc;
+  font-size: 11px;
+  font-family: monospace;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.test-account-row:hover .test-account-pwd {
+  opacity: 1;
 }
 
 /* ===== Mobile ===== */

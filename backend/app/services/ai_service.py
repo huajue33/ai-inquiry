@@ -1,76 +1,24 @@
 import json
 from datetime import date
-from typing import AsyncGenerator, Optional
+from typing import AsyncGenerator
 
-from openai import AsyncOpenAI
-from langchain_openai import ChatOpenAI
-from langchain.agents import create_tool_calling_agent, AgentExecutor
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.messages import HumanMessage, AIMessage
+from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, ToolMessage
 
 from app.config import get_settings
 from app.core.prompts import SYSTEM_PROMPT
 from app.core.permissions import current_user_var
 from app.database import SessionLocal
-from app.models.conversation import ChatMessage as ChatMessageModel
 from app.models.product import Category
 from app.models.permission import UserCategoryPermission
-from app.tools.price_tools import (
-    search_products,
-    get_latest_prices,
-    get_price_history,
-    get_price_ranking,
-)
+from app.services.agent import agent, openai_client
+from app.services.history import load_history
 
 settings = get_settings()
 
-# LangChain LLM（用于 Agent 工具调用，非思考模式）
-llm = ChatOpenAI(
-    base_url=settings.dashscope_base_url,
-    api_key=settings.dashscope_api_key,
-    model=settings.dashscope_model,
-    streaming=True,
-    model_kwargs={"stream_options": {"include_usage": True}},
-)
 
-# 原生 OpenAI 客户端（用于思考模式的直接调用）
-openai_client = AsyncOpenAI(
-    api_key=settings.dashscope_api_key,
-    base_url=settings.dashscope_base_url,
-)
-
-tools = [
-    search_products,
-    get_latest_prices,
-    get_price_history,
-    get_price_ranking,
-]
-
-prompt = ChatPromptTemplate.from_messages([
-    ("system", SYSTEM_PROMPT),
-    ("system", "{runtime_context}"),
-    MessagesPlaceholder(variable_name="chat_history", optional=True),
-    ("human", "{input}"),
-    MessagesPlaceholder(variable_name="agent_scratchpad"),
-])
-
-agent = create_tool_calling_agent(llm, tools, prompt)
-agent_executor = AgentExecutor(
-    agent=agent,
-    tools=tools,
-    verbose=True,
-    max_iterations=8,
-    handle_parsing_errors=True,
-    return_intermediate_steps=True,
-)
-
+# ── 运行时上下文 ────────────────────────────────────────
 
 def _build_runtime_context() -> str:
-    """构造运行时上下文（当前日期 + 用户权限范围）。
-
-    每次请求都会重新构造一次，确保模型拿到的是最新日期。
-    权限校验由工具层兜底，prompt 里只需让 LLM 知道自己在什么范围内工作。
-    """
     today = date.today()
     weekday = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"][today.weekday()]
     date_line = f"当前日期：{today.isoformat()}（{weekday}）。"
@@ -110,89 +58,9 @@ def _build_runtime_context() -> str:
         db.close()
 
 
-def _load_chat_history(conversation_id: str, max_turns: int = 5, max_tokens: int = 1500) -> list:
-    """
-    从数据库加载对话历史，转为 LangChain 消息格式。
-
-    采销询价场景的上下文策略：
-    1. 最多 5 轮（询价对话通常 3-5 轮就结束一个话题）
-    2. 用户消息完整保留（通常很短，是查询意图）
-    3. AI 回复只保留前 150 字摘要（完整回复太长，核心是让 AI 知道"上次回答了什么"）
-    4. Token 预算 1500（给系统提示词 + 工具 schema + 新回复留足空间）
-    5. 从最新往前取，保证追问上下文连贯
-    """
-    if not conversation_id:
-        return []
-
-    db = SessionLocal()
-    try:
-        # 直接用 LIMIT 取最近的消息，避免加载全部历史
-        messages = (
-            db.query(ChatMessageModel)
-            .filter(ChatMessageModel.conversation_id == conversation_id)
-            .order_by(ChatMessageModel.created_at.desc())
-            .limit(max_turns * 2)
-            .all()
-        )
-
-        if not messages:
-            return []
-
-        # 反转回时间正序
-        recent = list(reversed(messages))
-
-        # 从后往前累计，超出预算则截断
-        history = []
-        total_chars = 0
-        char_limit = int(max_tokens / 1.5)
-
-        for msg in reversed(recent):
-            content = msg.content or ""
-
-            if msg.role == "assistant":
-                # AI 回复只保留摘要（前150字），因为完整回复可能有大段表格
-                if len(content) > 150:
-                    content = content[:150] + "..."
-            # 用户消息完整保留（通常很短）
-
-            if total_chars + len(content) > char_limit:
-                break
-
-            total_chars += len(content)
-
-            if msg.role == "user":
-                history.insert(0, HumanMessage(content=content))
-            elif msg.role == "assistant":
-                history.insert(0, AIMessage(content=content))
-
-        return history
-    finally:
-        db.close()
-
-
-def _last_tool_observation(intermediate_steps) -> str:
-    """从 agent 的 intermediate_steps 中拿最后一次工具的返回，用作降级答复"""
-    if not intermediate_steps:
-        return ""
-    try:
-        _action, observation = intermediate_steps[-1]
-        return str(observation)[:600]
-    except Exception:
-        return ""
-
+# ── 流式入口 ────────────────────────────────────────────
 
 async def chat_stream(message: str, conversation_id: str, enable_thinking: bool = False) -> AsyncGenerator[str, None]:
-    """
-    Streaming with optional thinking mode.
-
-    SSE Events:
-      - {"event": "thinking_token", "data": "x"}  Thinking process token
-      - {"event": "token", "data": "x"}           Final answer token
-      - {"event": "tool_start", "data": "name"}   Tool call started
-      - {"event": "tool_end", "data": "name"}     Tool call ended
-      - {"event": "done", "data": {...}}           Completion metadata
-      - {"event": "error", "data": "x"}           Error
-    """
     try:
         if enable_thinking:
             async for chunk in _stream_with_thinking(message, conversation_id):
@@ -207,17 +75,24 @@ async def chat_stream(message: str, conversation_id: str, enable_thinking: bool 
 
 
 async def _stream_normal(message: str, conversation_id: str) -> AsyncGenerator[str, None]:
-    """普通流式输出（Agent + 工具调用）"""
+    """普通流式输出：LangGraph Agent + 工具调用"""
     usage_data = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
-    chat_history = _load_chat_history(conversation_id)
+
+    history = load_history(conversation_id)
     runtime_context = _build_runtime_context()
+
+    messages = [
+        SystemMessage(content=SYSTEM_PROMPT),
+        SystemMessage(content=runtime_context),
+        *history,
+        HumanMessage(content=message),
+    ]
 
     has_emitted_token = False
     last_tool_output = ""
 
-    async for event in agent_executor.astream_events(
-        {"input": message, "chat_history": chat_history, "runtime_context": runtime_context},
-        version="v2",
+    async for event in agent.astream_events(
+        {"messages": messages}, version="v2"
     ):
         kind = event["event"]
 
@@ -248,7 +123,6 @@ async def _stream_normal(message: str, conversation_id: str) -> AsyncGenerator[s
 
         elif kind == "on_tool_end":
             tool_name = event.get("name", "")
-            # 记录最后一次工具输出，用于无 token 兜底
             output = event.get("data", {}).get("output")
             if output is not None:
                 try:
@@ -257,13 +131,10 @@ async def _stream_normal(message: str, conversation_id: str) -> AsyncGenerator[s
                     pass
             yield f"data: {json.dumps({'event': 'tool_end', 'data': tool_name}, ensure_ascii=False)}\n\n"
 
-    # 兜底：如果整个 agent 流程没产生过 token（max_iterations 触发等情况），
-    # 用最后一次工具返回作为答复
     if not has_emitted_token:
         fallback = last_tool_output or "抱歉，没能从数据库找到匹配的结果。请尝试更具体的产品名或换个问法。"
         yield f"data: {json.dumps({'event': 'token', 'data': fallback}, ensure_ascii=False)}\n\n"
 
-    # 完成
     done_data = {
         "event": "done",
         "data": {
@@ -276,31 +147,31 @@ async def _stream_normal(message: str, conversation_id: str) -> AsyncGenerator[s
 
 
 async def _stream_with_thinking(message: str, conversation_id: str) -> AsyncGenerator[str, None]:
-    """
-    思考模式流式输出：
-    1. 先用 Agent（非流式）调用工具获取数据
-    2. 将工具结果 + 用户问题一起发给 LLM（开启 thinking），流式输出思考过程和最终回答
-    """
+    """思考模式：Agent 收集工具数据 → 思考 LLM 深度分析"""
     yield f"data: {json.dumps({'event': 'tool_start', 'data': '分析问题'}, ensure_ascii=False)}\n\n"
 
-    chat_history = _load_chat_history(conversation_id)
+    history = load_history(conversation_id)
     runtime_context = _build_runtime_context()
 
+    messages = [
+        SystemMessage(content=SYSTEM_PROMPT),
+        SystemMessage(content=runtime_context),
+        *history,
+        HumanMessage(content=message),
+    ]
+
     try:
-        agent_result = await agent_executor.ainvoke({
-            "input": message,
-            "chat_history": chat_history,
-            "runtime_context": runtime_context,
-        })
-        tool_output = agent_result.get("output") or _last_tool_observation(
-            agent_result.get("intermediate_steps", [])
-        )
+        state = await agent.ainvoke({"messages": messages})
+        tool_output = "\n".join(
+            msg.content[:600] for msg in state["messages"]
+            if isinstance(msg, ToolMessage)
+        ) or next((msg.content for msg in reversed(state["messages"])
+                   if isinstance(msg, AIMessage) and msg.content), "")
     except Exception as e:
         tool_output = f"工具调用出错: {str(e)}"
 
     yield f"data: {json.dumps({'event': 'tool_end', 'data': '分析问题'}, ensure_ascii=False)}\n\n"
 
-    # 阶段2：用思考模式深度分析
     thinking_prompt = f"""你是一个B端采销询价助手。
 
 {runtime_context}
