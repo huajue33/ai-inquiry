@@ -25,7 +25,8 @@ async def chat_stream(request: ChatRequest, user: User = Depends(get_current_use
         reset_permission_cache()
         try:
             async for chunk in ai_service.chat_stream(
-                request.message, conversation_id, request.enable_thinking
+                request.message, conversation_id, request.enable_thinking,
+                request.enable_web_search,
             ):
                 yield chunk
         finally:

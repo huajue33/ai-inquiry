@@ -9,6 +9,7 @@ from app.tools.price_tools import (
     get_price_history,
     get_price_ranking,
 )
+from app.tools.web_tools import web_search
 
 settings = get_settings()
 
@@ -27,12 +28,14 @@ openai_client = AsyncOpenAI(
     base_url=settings.dashscope_base_url,
 )
 
-tools = [
+_price_tools = [
     search_products,
     get_latest_prices,
     get_price_history,
     get_price_ranking,
 ]
+_all_tools = [*_price_tools, web_search]
 
-# LangGraph Agent
-agent = create_react_agent(llm, tools)
+# 两个 Agent 实例：根据用户是否开启联网搜索来选择
+agent = create_react_agent(llm, _price_tools)
+agent_web = create_react_agent(llm, _all_tools)

@@ -1,10 +1,11 @@
 /**
- * 流式发送消息（SSE），支持思考模式和中断
+ * 流式发送消息（SSE），支持思考模式、联网搜索和中断
  */
 export async function sendMessageStream(
   message: string,
   conversationId: string | undefined,
   enableThinking: boolean,
+  enableWebSearch: boolean,
   callbacks: {
     onToken: (token: string) => void
     onThinkingToken?: (token: string) => void
@@ -28,6 +29,7 @@ export async function sendMessageStream(
         message,
         conversation_id: conversationId,
         enable_thinking: enableThinking,
+        enable_web_search: enableWebSearch,
       }),
       signal: abortSignal,
     })

@@ -74,6 +74,18 @@
         <span v-else>松开 发送</span>
       </div>
 
+      <el-tooltip :content="chatStore.enableWebSearch ? '联网搜索已开启' : '开启联网搜索'" placement="top">
+        <el-button
+          :type="chatStore.enableWebSearch ? 'primary' : 'default'"
+          size="small"
+          circle
+          class="action-btn"
+          @click="chatStore.setEnableWebSearch(!chatStore.enableWebSearch)"
+        >
+          <el-icon :size="14"><Connection /></el-icon>
+        </el-button>
+      </el-tooltip>
+
       <el-tooltip :content="chatStore.enableThinking ? '深度思考已开启' : '开启深度思考'" placement="top">
         <el-button
           :type="chatStore.enableThinking ? 'warning' : 'default'"
@@ -111,7 +123,7 @@
 
 <script setup lang="ts">
 import { ref, watch, toRefs } from "vue"
-import { Promotion, MagicStick, VideoPause, Microphone, EditPen } from "@element-plus/icons-vue"
+import { Connection, Promotion, MagicStick, VideoPause, Microphone, EditPen } from "@element-plus/icons-vue"
 import { ElMessage } from "element-plus"
 import { useChatStore } from "../../stores/chat"
 import { sendMessageStream } from "../../api/chat"
@@ -244,6 +256,7 @@ const TOOL_NAMES: Record<string, string> = {
   get_latest_prices: "查询最新价格",
   get_price_history: "查询价格趋势",
   get_price_ranking: "查询涨跌排行",
+  web_search: "搜索互联网",
   "分析问题": "分析问题并查询数据",
 }
 
@@ -317,6 +330,7 @@ async function handleSend() {
       text,
       targetConvId,
       chatStore.enableThinking,
+      chatStore.enableWebSearch,
       {
         onToken(token: string) {
           chatStore.setToolStatus("", targetConvId)

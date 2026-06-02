@@ -10,7 +10,7 @@ from app.core.permissions import current_user_var
 from app.database import SessionLocal
 from app.models.product import Category
 from app.models.permission import UserCategoryPermission
-from app.services.agent import agent, openai_client
+from app.services.agent import agent, agent_web, openai_client
 from app.services.history import load_history
 
 settings = get_settings()
@@ -60,13 +60,13 @@ def _build_runtime_context() -> str:
 
 # ── 流式入口 ────────────────────────────────────────────
 
-async def chat_stream(message: str, conversation_id: str, enable_thinking: bool = False) -> AsyncGenerator[str, None]:
+async def chat_stream(message: str, conversation_id: str, enable_thinking: bool = False, enable_web_search: bool = False) -> AsyncGenerator[str, None]:
     try:
         if enable_thinking:
-            async for chunk in _stream_with_thinking(message, conversation_id):
+            async for chunk in _stream_with_thinking(message, conversation_id, enable_web_search):
                 yield chunk
         else:
-            async for chunk in _stream_normal(message, conversation_id):
+            async for chunk in _stream_normal(message, conversation_id, enable_web_search):
                 yield chunk
 
     except Exception as e:
@@ -74,10 +74,11 @@ async def chat_stream(message: str, conversation_id: str, enable_thinking: bool 
         yield f"data: {json.dumps(error_data, ensure_ascii=False)}\n\n"
 
 
-async def _stream_normal(message: str, conversation_id: str) -> AsyncGenerator[str, None]:
+async def _stream_normal(message: str, conversation_id: str, enable_web_search: bool = False) -> AsyncGenerator[str, None]:
     """普通流式输出：LangGraph Agent + 工具调用"""
     usage_data = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
+    _agent = agent_web if enable_web_search else agent
     history = load_history(conversation_id)
     runtime_context = _build_runtime_context()
 
@@ -91,7 +92,7 @@ async def _stream_normal(message: str, conversation_id: str) -> AsyncGenerator[s
     has_emitted_token = False
     last_tool_output = ""
 
-    async for event in agent.astream_events(
+    async for event in _agent.astream_events(
         {"messages": messages}, version="v2"
     ):
         kind = event["event"]
@@ -146,10 +147,11 @@ async def _stream_normal(message: str, conversation_id: str) -> AsyncGenerator[s
     yield f"data: {json.dumps(done_data, ensure_ascii=False)}\n\n"
 
 
-async def _stream_with_thinking(message: str, conversation_id: str) -> AsyncGenerator[str, None]:
+async def _stream_with_thinking(message: str, conversation_id: str, enable_web_search: bool = False) -> AsyncGenerator[str, None]:
     """思考模式：Agent 收集工具数据 → 思考 LLM 深度分析"""
     yield f"data: {json.dumps({'event': 'tool_start', 'data': '分析问题'}, ensure_ascii=False)}\n\n"
 
+    _agent = agent_web if enable_web_search else agent
     history = load_history(conversation_id)
     runtime_context = _build_runtime_context()
 
@@ -161,7 +163,7 @@ async def _stream_with_thinking(message: str, conversation_id: str) -> AsyncGene
     ]
 
     try:
-        state = await agent.ainvoke({"messages": messages})
+        state = await _agent.ainvoke({"messages": messages})
         tool_output = "\n".join(
             msg.content[:600] for msg in state["messages"]
             if isinstance(msg, ToolMessage)

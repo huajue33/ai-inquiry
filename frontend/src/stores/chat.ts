@@ -26,6 +26,7 @@ export const useChatStore = defineStore("chat", () => {
   const conversations = ref<ConversationItem[]>([])
   // 全局设置
   const enableThinking = ref(false)
+  const enableWebSearch = ref(false)
 
   // 每个对话的独立状态 Map
   const conversationStates = reactive<Map<string, ConversationState>>(new Map())
@@ -197,6 +198,10 @@ export const useChatStore = defineStore("chat", () => {
     enableThinking.value = val
   }
 
+  function setEnableWebSearch(val: boolean) {
+    enableWebSearch.value = val
+  }
+
   function setConversationId(id: string) {
     conversationId.value = id
   }
@@ -214,6 +219,7 @@ export const useChatStore = defineStore("chat", () => {
     streaming,
     toolStatus,
     enableThinking,
+    enableWebSearch,
     addMessage,
     updateLastMessage,
     appendToLastMessage,
@@ -230,6 +236,7 @@ export const useChatStore = defineStore("chat", () => {
     setStreaming,
     setToolStatus,
     setEnableThinking,
+    setEnableWebSearch,
     setConversationId,
   }
 })

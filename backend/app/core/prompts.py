@@ -8,6 +8,7 @@ SYSTEM_PROMPT = """你是 B 端采销询价助手，帮用户查产品价格、�
 - 涨跌榜直接调 get_price_ranking，不用先搜。
 - 多品牌对比：先用 search_products 拉够候选（limit≥20），从中**挑不同品牌的代表**（≤8 个）再批量取价。不要把搜索结果前 N 个一股脑取价，否则容易全是同品牌不同规格。
 - search_products 命中过多并返回 groups 时，列出分组反问用户"你说的是哪种？"，不要硬挑前几个报价。
+- 需要查询实时市场信息、行情新闻、政策变动时调用 web_search。日常价格查询用 search_products / get_latest_prices 即可，不要浪费调用去搜网页。
 - 不重复调用相同参数的同一工具。
 
 # 错误处理
