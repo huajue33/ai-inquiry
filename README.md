@@ -102,22 +102,26 @@
 │   │   └── router/             # 路由（含权限守卫）
 │   └── package.json
 ├── docker-compose.yml          # 后端栈（Meilisearch + Backend）
+├── scripts/
+│   └── build-push.sh           # 本地构建 + 推送镜像到 Docker Hub
+├── .github/workflows/
+│   └── deploy.yml              # GitHub Actions 自动部署
 ├── DEPLOY.md                   # 详细部署文档
 └── README.md
 ```
 
-## 快速开始
+## 快速开始（本地开发）
 
 ### 环境要求
 - Python 3.11+
 - Node.js 18+
 - MySQL 8.0+
-- Docker（用于 Meilisearch）
+- Docker Desktop
 
 ### 1. 启动 Meilisearch
 
 ```bash
-docker-compose up -d meilisearch
+docker compose up -d meilisearch
 ```
 
 ### 2. 配置后端
@@ -126,17 +130,12 @@ docker-compose up -d meilisearch
 cd backend
 cp .env.example .env
 # 编辑 .env，填入百炼 API Key、数据库密码等
-```
-
-### 3. 安装后端依赖并启动
-
-```bash
 pip install -r requirements.txt
 python sync_products.py --reset   # 同步产品数据到 Meilisearch
 uvicorn app.main:app --reload --port 8000
 ```
 
-### 4. 安装前端依赖并启动
+### 3. 启动前端
 
 ```bash
 cd frontend
@@ -144,7 +143,7 @@ npm install
 npm run dev
 ```
 
-### 5. 访问
+### 4. 访问
 
 - 前端：http://localhost:3000
 - 后端 API 文档：http://localhost:8000/docs
@@ -208,7 +207,39 @@ npm run dev
 
 ## 部署
 
-详见 [DEPLOY.md](./DEPLOY.md)，支持前后端分离的 Docker 部署方案。
+> 详细文档见 [DEPLOY.md](./DEPLOY.md)
+
+### 架构
+
+```
+用户 → 宝塔 Nginx (:80, SSL)
+  ├── /     → 127.0.0.1:8080  (前端 Docker 容器)
+  └── /api/ → 127.0.0.1:8000  (后端 Docker 容器)
+```
+
+### 部署流程
+
+```
+本地开发 → docker build → Docker Hub  ← 只推一次镜像
+                ↓
+         git push → GitHub Actions
+                ↓
+         服务器 docker pull + restart  ← 秒级更新
+```
+
+- **构建**：本地 `bash scripts/build-push.sh` 构建镜像并推送到 Docker Hub
+- **部署**：`git push` 触发 GitHub Actions，SSH 到服务器拉取镜像并重启
+- **前端**：容器内 Nginx 反代 `/api/` 到后端，外层宝塔 Nginx 处理域名和 SSL
+- **数据库**：MySQL 8.0 运行在宿主机，通过 `host.docker.internal` 连接
+
+### 服务器手动部署
+
+```bash
+cd /www/wwwroot/ai-inquiry
+docker compose pull && docker compose up -d        # 后端
+cd frontend && docker compose pull && docker compose up -d  # 前端
+docker image prune -f
+```
 
 ## License
 

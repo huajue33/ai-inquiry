@@ -1,3 +1,4 @@
+# 推送代码到 main 分支后，自动 SSH 到服务器执行部署
 name: Deploy to Server
 
 on:
@@ -19,19 +20,23 @@ jobs:
             set -e
             cd /www/wwwroot/ai-inquiry
 
+            # 拉取最新配置文件（docker-compose.yml 等）
             echo "=== Pulling latest code ==="
             git pull origin main
 
+            # 拉取最新 Docker 镜像（本地构建推送到 Docker Hub 的）
             echo "=== Pulling latest images ==="
             docker compose pull
             cd frontend && docker compose pull && cd ..
 
+            # 重启服务会自动识别镜像更新
             echo "=== Restarting backend stack ==="
             docker compose up -d
 
             echo "=== Restarting frontend stack ==="
             cd frontend && docker compose up -d && cd ..
 
+            # 清理无用的旧镜像释放磁盘空间
             echo "=== Cleaning old images ==="
             docker image prune -f
 
