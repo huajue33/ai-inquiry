@@ -54,6 +54,7 @@ def fetch_all_products(db, category_map: dict[int, str]) -> list[dict]:
 
 
 def main():
+    """主入口：将 MySQL 产品数据全量或增量同步到 Meilisearch"""
     reset = "--reset" in sys.argv
 
     print("=" * 50)

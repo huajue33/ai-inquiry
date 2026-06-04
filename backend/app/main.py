@@ -20,6 +20,7 @@ def _parse_cors_origins() -> list[str]:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """应用生命周期管理：启动时初始化 Meilisearch 索引，关闭时清理资源"""
     try:
         from app.services.search_service import setup_index, get_index_stats
         setup_index()
@@ -72,4 +73,5 @@ app.include_router(admin.router, prefix="/api/admin", tags=["管理后台"])
 
 @app.get("/api/health")
 def health_check():
+    """健康检查接口"""
     return {"status": "ok"}

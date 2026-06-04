@@ -87,6 +87,7 @@ async def create_user(
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
+    """创建新用户账号"""
     existing = db.query(User).filter(User.username == request.username).first()
     if existing:
         raise HTTPException(status_code=400, detail="用户名已存在")
@@ -109,6 +110,7 @@ async def update_user(
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
+    """更新用户信息（姓名、角色、启用状态、密码）"""
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="用户不存在")
@@ -151,6 +153,7 @@ async def get_user_permissions(
     user: User = Depends(require_admin_or_manager),
     db: Session = Depends(get_db),
 ):
+    """获取用户的数据权限（已授权的分类列表）"""
     perms = (
         db.query(UserCategoryPermission)
         .filter(UserCategoryPermission.user_id == user_id)
@@ -207,6 +210,7 @@ async def list_products(
     user: User = Depends(require_authed),
     db: Session = Depends(get_db),
 ):
+    """分页查询商品列表，支持关键词和分类筛选"""
     query = db.query(Product)
     if keyword:
         # 纯数字按 product_id 精确查找
@@ -319,6 +323,7 @@ async def list_categories(
     user: User = Depends(require_authed),
     db: Session = Depends(get_db),
 ):
+    """获取所有商品分类列表"""
     categories = db.query(Category).order_by(Category.level, Category.name).all()
     return {
         "categories": [
@@ -429,6 +434,7 @@ async def get_conversation_messages(
     user: User = Depends(require_authed),
     db: Session = Depends(get_db),
 ):
+    """获取指定对话的详细消息记录"""
     # 非 admin 只能看自己的对话
     conv = db.query(Conversation).filter(Conversation.id == conversation_id).first()
     if not conv:
@@ -498,6 +504,7 @@ async def get_stats(
     today_conversations = today_q.scalar()
 
     def daily(field_metric, base_query):
+        """查询指定指标在最近7天的每日数据"""
         results = []
         for i in range(6, -1, -1):
             d = date.today() - timedelta(days=i)

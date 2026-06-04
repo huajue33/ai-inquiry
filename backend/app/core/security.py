@@ -18,14 +18,17 @@ REFRESH_TOKEN_EXPIRE_DAYS = 7
 
 
 def hash_password(password: str) -> str:
+    """对明文密码进行 bcrypt 哈希"""
     return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
 
 
 def verify_password(plain: str, hashed: str) -> bool:
+    """校验明文密码与哈希值是否匹配"""
     return bcrypt.checkpw(plain.encode(), hashed.encode())
 
 
 def create_access_token(data: dict) -> str:
+    """生成 JWT access token"""
     to_encode = data.copy()
     expire = datetime.utcnow() + timedelta(minutes=settings.jwt_expire_minutes)
     to_encode.update({"exp": expire, "type": "access"})
@@ -41,6 +44,7 @@ def create_refresh_token(data: dict) -> str:
 
 
 def decode_token(token: str) -> dict:
+    """解码 JWT token 并返回 payload"""
     return jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
 
 

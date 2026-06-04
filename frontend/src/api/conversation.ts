@@ -17,26 +17,32 @@ export interface MessageItem {
   created_at: string
 }
 
+/** 获取当前用户的对话列表 */
 export function getConversations(): Promise<{ conversations: ConversationItem[] }> {
   return request.get("/conversations/")
 }
 
+/** 创建新的对话 */
 export function createConversation(): Promise<{ id: string; title: string }> {
   return request.post("/conversations/create")
 }
 
+/** 获取指定对话的详情及历史消息 */
 export function getConversation(id: string): Promise<{ id: string; title: string; messages: MessageItem[] }> {
   return request.get(`/conversations/${id}`)
 }
 
+/** 更新对话标题 */
 export function updateConversationTitle(id: string, title: string): Promise<any> {
   return request.put(`/conversations/${id}/title`, { title })
 }
 
+/** 删除指定对话 */
 export function deleteConversation(id: string): Promise<any> {
   return request.delete(`/conversations/${id}`)
 }
 
+/** 将消息保存到指定对话中 */
 export function saveMessage(data: {
   conversation_id: string
   role: string

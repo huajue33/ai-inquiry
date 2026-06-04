@@ -63,6 +63,7 @@ def generate_new_price(current_price: float) -> float:
 
 
 def main():
+    """主入口：为每个产品生成指定日期范围内的模拟价格数据"""
     cursor = conn.cursor()
 
     print("获取基准价格...")

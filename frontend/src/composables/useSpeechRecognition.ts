@@ -24,6 +24,7 @@ export function useSpeechRecognition() {
 
   let recognition: any = null
 
+  /** 开始语音识别，返回是否成功启动 */
   function start() {
     if (!isSupported.value) {
       errorMsg.value = "当前浏览器不支持语音识别，建议使用 Edge 或 Chrome"
@@ -86,6 +87,7 @@ export function useSpeechRecognition() {
     }
   }
 
+  /** 停止语音识别（仍会返回已识别的结果） */
   function stop() {
     if (recognition && isRecording.value) {
       try {
@@ -97,6 +99,7 @@ export function useSpeechRecognition() {
     isRecording.value = false
   }
 
+  /** 中止语音识别（丢弃未返回的结果） */
   function abort() {
     if (recognition) {
       try {

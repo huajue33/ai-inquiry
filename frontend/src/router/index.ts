@@ -44,6 +44,7 @@ const router = createRouter({
   ],
 })
 
+/** 路由守卫：检查登录态和角色权限，未登录跳转/login，已登录访问/login则重定向到/ */
 router.beforeEach((to, _from, next) => {
   const token = localStorage.getItem("token")
   if (to.meta.requiresAuth && !token) {

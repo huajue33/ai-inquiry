@@ -21,12 +21,14 @@ from app.core.security import get_current_user
 # ===== 1. 角色级权限 =====
 
 def require_admin(user: User = Depends(get_current_user)) -> User:
+    """校验当前用户拥有管理员权限"""
     if user.role != "admin":
         raise HTTPException(status_code=403, detail="需要管理员权限")
     return user
 
 
 def require_admin_or_manager(user: User = Depends(get_current_user)) -> User:
+    """校验当前用户拥有管理员或主管权限"""
     if user.role not in ("admin", "manager"):
         raise HTTPException(status_code=403, detail="需要管理员或主管权限")
     return user
@@ -120,4 +122,5 @@ current_user_var: ContextVar[Optional[User]] = ContextVar("current_user", defaul
 
 
 def get_current_user_from_context() -> Optional[User]:
+    """从 ContextVar 中获取当前请求的用户"""
     return current_user_var.get()

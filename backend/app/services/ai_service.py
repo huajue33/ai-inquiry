@@ -19,6 +19,7 @@ settings = get_settings()
 # ── 运行时上下文 ────────────────────────────────────────
 
 def _build_runtime_context() -> str:
+    """构建运行时上下文信息，包含当前日期和用户权限范围"""
     today = date.today()
     weekday = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"][today.weekday()]
     date_line = f"当前日期：{today.isoformat()}（{weekday}）。"
@@ -61,6 +62,7 @@ def _build_runtime_context() -> str:
 # ── 流式入口 ────────────────────────────────────────────
 
 async def chat_stream(message: str, conversation_id: str, enable_thinking: bool = False, enable_web_search: bool = False) -> AsyncGenerator[str, None]:
+    """根据模式分派到常规流式或思考流式，以SSE格式输出AI回复"""
     try:
         if enable_thinking:
             async for chunk in _stream_with_thinking(message, conversation_id, enable_web_search):

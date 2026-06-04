@@ -135,10 +135,12 @@ export const useChatStore = defineStore("chat", () => {
   }
 
   // 以下操作都针对指定的对话（默认当前对话）
+  /** 向指定对话添加一条消息 */
   function addMessage(msg: ChatMessage, convId?: string) {
     getState(convId).messages.push(msg)
   }
 
+  /** 更新当前对话最后一条助手消息的部分字段 */
   function updateLastMessage(updates: Partial<ChatMessage>, convId?: string) {
     const state = getState(convId)
     const last = state.messages[state.messages.length - 1]
@@ -147,6 +149,7 @@ export const useChatStore = defineStore("chat", () => {
     }
   }
 
+  /** 向最后一条助手消息追加回复内容token */
   function appendToLastMessage(token: string, convId?: string) {
     const state = getState(convId)
     const last = state.messages[state.messages.length - 1]
@@ -155,6 +158,7 @@ export const useChatStore = defineStore("chat", () => {
     }
   }
 
+  /** 向最后一条助手消息追加思考过程token */
   function appendThinkingToLastMessage(token: string, convId?: string) {
     const state = getState(convId)
     const last = state.messages[state.messages.length - 1]
@@ -164,6 +168,7 @@ export const useChatStore = defineStore("chat", () => {
     }
   }
 
+  /** 记录工具调用开始，在消息中创建running状态的toolCall */
   function addToolCall(name: string, displayName: string, convId?: string) {
     const state = getState(convId)
     const last = state.messages[state.messages.length - 1]
@@ -173,6 +178,7 @@ export const useChatStore = defineStore("chat", () => {
     }
   }
 
+  /** 标记指定工具调用为完成状态 */
   function completeToolCall(name: string, convId?: string) {
     const state = getState(convId)
     const last = state.messages[state.messages.length - 1]
@@ -182,26 +188,32 @@ export const useChatStore = defineStore("chat", () => {
     }
   }
 
+  /** 设置指定对话的加载状态 */
   function setLoading(val: boolean, convId?: string) {
     getState(convId).loading = val
   }
 
+  /** 设置指定对话的流式输出状态 */
   function setStreaming(val: boolean, convId?: string) {
     getState(convId).streaming = val
   }
 
+  /** 设置指定对话的工具调用状态文本 */
   function setToolStatus(status: string, convId?: string) {
     getState(convId).toolStatus = status
   }
 
+  /** 设置全局思考模式开关 */
   function setEnableThinking(val: boolean) {
     enableThinking.value = val
   }
 
+  /** 设置全局联网搜索开关 */
   function setEnableWebSearch(val: boolean) {
     enableWebSearch.value = val
   }
 
+  /** 设置当前活跃的对话ID */
   function setConversationId(id: string) {
     conversationId.value = id
   }

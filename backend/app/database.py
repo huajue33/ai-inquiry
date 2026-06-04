@@ -14,6 +14,7 @@ class Base(DeclarativeBase):
 
 
 def get_db():
+    """FastAPI 依赖：提供数据库会话并确保请求结束后关闭"""
     db = SessionLocal()
     try:
         yield db

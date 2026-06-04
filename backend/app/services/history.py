@@ -10,6 +10,7 @@ _summary_llm: ChatOpenAI | None = None
 
 
 def _get_summary_llm() -> ChatOpenAI:
+    """惰性初始化并返回用于对话摘要的LLM实例"""
     global _summary_llm
     if _summary_llm is None:
         settings = get_settings()
@@ -70,6 +71,7 @@ def _build(raw: list[tuple[str, str]], max_tokens: int = 1500) -> list[AIMessage
 
 
 def _truncate_ai(raw: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """截断AI回复超过150字的内容，减少上下文占用"""
     result = []
     for role, content in raw:
         if role == "assistant" and len(content) > 150:
@@ -80,6 +82,7 @@ def _truncate_ai(raw: list[tuple[str, str]]) -> list[tuple[str, str]]:
 
 
 def _to_messages(raw: list[tuple[str, str]]) -> list[AIMessage | HumanMessage]:
+    """将(角色, 内容)元组列表转换为LangChain消息对象列表"""
     msgs: list[AIMessage | HumanMessage] = []
     for role, content in raw:
         if role == "user":
@@ -90,6 +93,7 @@ def _to_messages(raw: list[tuple[str, str]]) -> list[AIMessage | HumanMessage]:
 
 
 def _to_text(raw: list[tuple[str, str]]) -> str:
+    """将(角色, 内容)元组列表转换为带角色前缀的纯文本字符串"""
     return "\n".join(
         f"{'用户' if role == 'user' else '助手'}: {content}"
         for role, content in raw
@@ -97,6 +101,7 @@ def _to_text(raw: list[tuple[str, str]]) -> str:
 
 
 def _summarize(text: str) -> str:
+    """使用LLM将较早的对话压缩为简洁摘要，保留关键查询和价格信息"""
     llm = _get_summary_llm()
     resp = llm.invoke([
         SystemMessage(

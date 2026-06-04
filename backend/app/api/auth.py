@@ -57,6 +57,7 @@ class ChangePasswordRequest(BaseModel):
 
 @router.post("/login", response_model=LoginResponse)
 async def login(request: LoginRequest, db: Session = Depends(get_db)):
+    """验证用户名密码并返回 JWT token"""
     user = db.query(User).filter(User.username == request.username).first()
     if not user or not verify_password(request.password, user.password_hash):
         raise HTTPException(
@@ -105,6 +106,7 @@ async def refresh_token(request: RefreshRequest, db: Session = Depends(get_db)):
 
 @router.get("/me", response_model=UserInfo)
 async def get_me(user: User = Depends(get_current_user)):
+    """返回当前登录用户的身份信息"""
     return UserInfo(
         user_id=user.id,
         username=user.username,
@@ -119,6 +121,7 @@ async def change_password(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    """修改当前用户的登录密码"""
     if not verify_password(request.old_password, user.password_hash):
         raise HTTPException(status_code=400, detail="原密码错误")
     if len(request.new_password) < 6:

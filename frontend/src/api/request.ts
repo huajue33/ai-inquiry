@@ -10,15 +10,18 @@ let isRefreshing = false
 // 等待刷新完成的请求队列
 let refreshSubscribers: Array<(token: string) => void> = []
 
+/** 将回调加入token刷新等待队列 */
 function subscribeTokenRefresh(cb: (token: string) => void) {
   refreshSubscribers.push(cb)
 }
 
+/** 通知所有等待队列中的请求使用新token重试 */
 function onTokenRefreshed(newToken: string) {
   refreshSubscribers.forEach((cb) => cb(newToken))
   refreshSubscribers = []
 }
 
+/** 使用refresh_token换取新的access_token，失败时清除登录态 */
 async function refreshToken(): Promise<string | null> {
   const refreshTokenStr = localStorage.getItem("refresh_token")
   if (!refreshTokenStr) return null
@@ -40,6 +43,7 @@ async function refreshToken(): Promise<string | null> {
   }
 }
 
+/** 请求拦截器：自动为每个请求注入Authorization header */
 request.interceptors.request.use((config) => {
   const token = localStorage.getItem("token")
   if (token) {
@@ -48,6 +52,7 @@ request.interceptors.request.use((config) => {
   return config
 })
 
+/** 响应拦截器：自动提取data字段，处理401并触发token刷新队列机制 */
 request.interceptors.response.use(
   (response) => response.data,
   async (error) => {

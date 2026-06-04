@@ -71,12 +71,14 @@ def _allowed_ids(db) -> Optional[list[int]]:
 # ===== 统一返回格式 =====
 
 def _err(code: str, message: str, **extra) -> str:
+    """构造错误响应 JSON 字符串"""
     payload = {"error": code, "message": message}
     payload.update(extra)
     return json.dumps(payload, ensure_ascii=False)
 
 
 def _ok(data) -> str:
+    """构造成功响应 JSON 字符串"""
     return json.dumps(data, ensure_ascii=False, default=str)
 
 
