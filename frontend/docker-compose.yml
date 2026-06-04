@@ -4,14 +4,11 @@
 # ============================================================
 services:
   frontend:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: quotation-frontend:latest
+    image: a3315300155/ai-inquiry-frontend:latest
     container_name: quotation-frontend
     restart: unless-stopped
     environment:
       # 后端 API 地址，由 nginx 启动时通过 envsubst 注入到 default.conf
       BACKEND_URL: ${BACKEND_URL}
     ports:
-      - "${WEB_PORT:-80}:80"
+      - "${WEB_PORT:-8080}:80"

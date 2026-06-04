@@ -27,10 +27,7 @@ services:
       - quotation-net
 
   backend:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    image: quotation-backend:latest
+    image: a3315300155/ai-inquiry-backend:latest
     container_name: quotation-backend
     restart: unless-stopped
     # 让容器内的 host.docker.internal 指向宿主机（连宝塔的 MySQL 用）

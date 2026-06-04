@@ -13,7 +13,7 @@ jobs:
         with:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_KEY }}
+          password: ${{ secrets.SSH_PASSWORD }}
           port: ${{ secrets.SSH_PORT || '22' }}
           script: |
             set -e
@@ -22,8 +22,15 @@ jobs:
             echo "=== Pulling latest code ==="
             git pull origin main
 
-            echo "=== Rebuilding backend stack ==="
-            docker compose up -d --build
+            echo "=== Pulling latest images ==="
+            docker compose pull
+            cd frontend && docker compose pull && cd ..
+
+            echo "=== Restarting backend stack ==="
+            docker compose up -d
+
+            echo "=== Restarting frontend stack ==="
+            cd frontend && docker compose up -d && cd ..
 
             echo "=== Cleaning old images ==="
             docker image prune -f
