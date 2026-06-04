@@ -17,7 +17,7 @@ RUN apt-get update \
 
 # 先装依赖，利用 docker layer 缓存
 COPY requirements.txt .
-RUN pip install -r requirements.txt
+RUN pip install -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt
 
 # 拷贝代码
 COPY . .
