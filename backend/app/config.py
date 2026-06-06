@@ -10,6 +10,8 @@ class Settings(BaseSettings):
     dashscope_models: str = ""
     # 语音识别（ASR）模型
     dashscope_asr_model: str = "qwen3-asr-flash"
+    # LLM 调用瞬时失败（连接错误/429/5xx/超时）的自动重试次数（指数退避，由 OpenAI SDK 实现）
+    llm_max_retries: int = 3
 
     db_host: str = "127.0.0.1"
     db_port: int = 3306

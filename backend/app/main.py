@@ -7,6 +7,12 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import chat, auth, conversation, admin
 
+# 确保应用自身的 INFO 日志（如 [agent-trace] 决策日志）能输出
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+
 logger = logging.getLogger(__name__)
 
 

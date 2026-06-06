@@ -10,6 +10,7 @@ from app.tools.price_tools import (
     get_latest_prices,
     get_price_history,
     get_price_ranking,
+    get_category_price_summary,
 )
 from app.tools.web_tools import web_search
 
@@ -44,6 +45,7 @@ class ReasoningChatOpenAI(ChatOpenAI):
 openai_client = AsyncOpenAI(
     api_key=settings.dashscope_api_key,
     base_url=settings.dashscope_base_url,
+    max_retries=settings.llm_max_retries,
 )
 
 _price_tools = [
@@ -51,6 +53,7 @@ _price_tools = [
     get_latest_prices,
     get_price_history,
     get_price_ranking,
+    get_category_price_summary,
 ]
 _all_tools = [*_price_tools, web_search]
 
@@ -62,6 +65,7 @@ def _build_llm(model: str, enable_thinking: bool = False):
         api_key=settings.dashscope_api_key,
         model=model,
         streaming=True,
+        max_retries=settings.llm_max_retries,
         model_kwargs={"stream_options": {"include_usage": True}},
     )
     if enable_thinking:
@@ -70,14 +74,11 @@ def _build_llm(model: str, enable_thinking: bool = False):
 
 
 @lru_cache(maxsize=32)
-def get_agents(model: str, enable_thinking: bool = False):
-    """返回 (agent, agent_web) 二元组，按 (模型, 是否思考) 缓存，避免每请求重建。
+def get_agent(model: str, enable_thinking: bool = False):
+    """构建带全部工具（价格查询 + 联网搜索）的 Agent，按 (模型, 是否思考) 缓存。
 
-    - agent：仅价格工具
-    - agent_web：价格工具 + 联网搜索
+    web_search 始终可用，由模型在内部库查不到时自行作为补充调用（见系统提示词），
+    不再依赖前端的「联网搜索」开关。
     """
     llm = _build_llm(model, enable_thinking)
-    return (
-        create_agent(llm, _price_tools),
-        create_agent(llm, _all_tools),
-    )
+    return create_agent(llm, _all_tools)

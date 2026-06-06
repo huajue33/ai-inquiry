@@ -7,18 +7,22 @@ from typing import AsyncGenerator
 
 from starlette.concurrency import run_in_threadpool
 from langchain_core.messages import SystemMessage, HumanMessage
+from langgraph.errors import GraphRecursionError
 
 from app.core.prompts import SYSTEM_PROMPT
 from app.core.permissions import current_user_var
-from app.core.models import resolve_model, model_supports_thinking
+from app.core.models import route_model, model_supports_thinking
 from app.database import SessionLocal
 from app.models.product import Category
 from app.models.permission import UserCategoryPermission
-from app.services.agent import get_agents
+from app.services.agent import get_agent
 from app.services.history import load_history
 from app.services.persistence import save_assistant_message
 
 logger = logging.getLogger(__name__)
+
+# Agent 图递归上限（兜底；工具层已对 search_products 限次，这里防其他失控）
+AGENT_RECURSION_LIMIT = 15
 
 
 # ── 产品 ID 标记校验（防幻觉链接） ──────────────────────
@@ -64,6 +68,40 @@ def _scrub_invalid_id_markers(content: str, valid_ids: set[int]) -> str:
         return "{#id=%d}" % pid  # 归一化为单括号
 
     return _ID_MARKER_RE.sub(_repl, content)
+
+
+# ── 决策日志（本地可观测性） ──────────────────────────
+
+def _tool_outcome(output) -> str:
+    """从工具输出粗略判定状态：error:<code> / empty / ok。"""
+    try:
+        s = str(output)
+    except Exception:
+        return "ok"
+    m = re.search(r'"error"\s*:\s*"([^"]+)"', s)
+    if m:
+        return f"error:{m.group(1)}"
+    if re.search(r'"(total|returned)"\s*:\s*0\b', s):
+        return "empty"
+    return "ok"
+
+
+def _log_trace(acc: dict, model: str, thinking: bool, duration_ms: int, outcome: str) -> None:
+    """每轮对话收尾打一条结构化决策日志，便于本地排障（无外部依赖）。"""
+    try:
+        user = current_user_var.get()
+        tools = acc.get("tool_calls", [])
+        tool_str = ", ".join(
+            f"{t['tool']}({str(t.get('args', {}))[:50]})->{t['status']}" for t in tools
+        ) or "-"
+        usage = acc.get("usage", {})
+        logger.info(
+            "[agent-trace] user=%s model=%s thinking=%s web=%s tools=[%s] tokens=%s dur=%dms outcome=%s",
+            getattr(user, "id", None), model, thinking, acc.get("web_used", False),
+            tool_str, usage.get("total_tokens", 0), duration_ms, outcome,
+        )
+    except Exception:
+        pass
 
 
 # ── 运行时上下文 ────────────────────────────────────────
@@ -117,8 +155,8 @@ async def chat_stream(message: str, conversation_id: str, enable_thinking: bool 
     无论正常结束还是客户端中途断开（关闭页面/点停止），都会在 finally 中由服务端
     兜底持久化助手消息，内容/思考/usage/duration 以服务端为准。
     """
-    # 模型收敛为白名单内的合法值（非法/缺省回退默认模型）
-    model = resolve_model(model)
+    # 解析实际调用的模型：auto 时按问题复杂度路由到 lite/主模型；否则尊重用户选择
+    model = route_model(model, message)
     # 仅当模型支持思考时才真正开启（避免对不支持的模型发 enable_thinking）
     thinking = bool(enable_thinking) and model_supports_thinking(model)
 
@@ -128,15 +166,38 @@ async def chat_stream(message: str, conversation_id: str, enable_thinking: bool 
         "thinking": "",
         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
         "suggestions": [],
+        "tool_calls": [],
+        "web_used": False,
     }
     user = current_user_var.get()
     started_at = time.monotonic()
+    outcome = "ok"
 
     try:
-        async for chunk in _stream(message, conversation_id, enable_web_search, acc, model, thinking):
+        async for chunk in _stream(message, conversation_id, acc, model, thinking):
             yield chunk
 
+    except GraphRecursionError:
+        # 兜底：Agent 反复调用工具未收敛（如查询数据库里不存在的商品）。
+        # 给用户一个干净的回答而非原始报错，并作为正常内容持久化。
+        outcome = "recursion_limit"
+        fallback = acc.get("content") or "抱歉，没能找到相关商品，可能暂未收录。换个名称或确认是否在售再试试。"
+        if not acc.get("content"):
+            acc["content"] = fallback
+            yield f"data: {json.dumps({'event': 'token', 'data': fallback}, ensure_ascii=False)}\n\n"
+        done_data = {
+            "event": "done",
+            "data": {
+                "suggestions": ["查询今日蔬菜价格", "对比不同品牌食用油价格", "查看近7天鸡蛋价格趋势"],
+                "conversation_id": conversation_id,
+                "usage": acc.get("usage", {}),
+                "content": acc["content"],
+            },
+        }
+        yield f"data: {json.dumps(done_data, ensure_ascii=False)}\n\n"
+
     except Exception as e:
+        outcome = "error"
         error_data = {"event": "error", "data": str(e)}
         yield f"data: {json.dumps(error_data, ensure_ascii=False)}\n\n"
 
@@ -144,6 +205,9 @@ async def chat_stream(message: str, conversation_id: str, enable_thinking: bool 
         # 同步落库：finally 在协程被取消（客户端断开）时仍会执行，
         # 这里不做 await，避免在取消阶段再次被取消而中断写入。
         duration_ms = int((time.monotonic() - started_at) * 1000)
+        if outcome == "ok" and not acc.get("content"):
+            outcome = "empty"
+        _log_trace(acc, model, thinking, duration_ms, outcome)
         if user is not None and (acc["content"] or acc["thinking"]):
             try:
                 save_assistant_message(
@@ -159,7 +223,7 @@ async def chat_stream(message: str, conversation_id: str, enable_thinking: bool 
                 logger.warning(f"流结束时持久化助手消息失败: {e}")
 
 
-async def _stream(message: str, conversation_id: str, enable_web_search: bool, acc: dict, model: str, thinking: bool) -> AsyncGenerator[str, None]:
+async def _stream(message: str, conversation_id: str, acc: dict, model: str, thinking: bool) -> AsyncGenerator[str, None]:
     """统一的单次流式：LangGraph Agent + 工具调用（+ 可选思考）。
 
     thinking=True 时使用开启 reasoning 的 Agent，在同一次流式里同时产出
@@ -167,8 +231,7 @@ async def _stream(message: str, conversation_id: str, enable_web_search: bool, a
     """
     usage_data = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
-    agent, agent_web = get_agents(model, thinking)
-    _agent = agent_web if enable_web_search else agent
+    _agent = get_agent(model, thinking)
 
     # 同步 DB 查询放线程池，避免阻塞事件循环
     history = await run_in_threadpool(load_history, conversation_id)
@@ -185,7 +248,9 @@ async def _stream(message: str, conversation_id: str, enable_web_search: bool, a
     last_tool_output = ""
     all_tool_outputs: list[str] = []
 
-    async for event in _agent.astream_events({"messages": messages}, version="v2"):
+    async for event in _agent.astream_events(
+        {"messages": messages}, version="v2", config={"recursion_limit": AGENT_RECURSION_LIMIT}
+    ):
         kind = event["event"]
 
         if kind == "on_chat_model_stream":
@@ -219,6 +284,11 @@ async def _stream(message: str, conversation_id: str, enable_web_search: bool, a
 
         elif kind == "on_tool_start":
             tool_name = event.get("name", "")
+            acc.setdefault("tool_calls", []).append({
+                "tool": tool_name,
+                "args": event.get("data", {}).get("input", {}),
+                "status": "?",
+            })
             yield f"data: {json.dumps({'event': 'tool_start', 'data': tool_name}, ensure_ascii=False)}\n\n"
 
         elif kind == "on_tool_end":
@@ -231,6 +301,14 @@ async def _stream(message: str, conversation_id: str, enable_web_search: bool, a
                     all_tool_outputs.append(out_str)
                 except Exception:
                     pass
+            # 记录工具结果状态到轨迹（用于决策日志）
+            status = _tool_outcome(output)
+            for entry in reversed(acc.get("tool_calls", [])):
+                if entry["tool"] == tool_name and entry["status"] == "?":
+                    entry["status"] = status
+                    break
+            if tool_name == "web_search":
+                acc["web_used"] = True
             yield f"data: {json.dumps({'event': 'tool_end', 'data': tool_name}, ensure_ascii=False)}\n\n"
 
     if not has_emitted_token:

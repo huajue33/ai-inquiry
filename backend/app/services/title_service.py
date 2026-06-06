@@ -11,6 +11,7 @@ logger = logging.getLogger(__name__)
 client = AsyncOpenAI(
     api_key=settings.dashscope_api_key,
     base_url=settings.dashscope_base_url,
+    max_retries=settings.llm_max_retries,
 )
 
 

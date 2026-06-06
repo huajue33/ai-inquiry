@@ -103,18 +103,6 @@
         </template>
       </el-dropdown>
 
-      <el-tooltip :content="chatStore.enableWebSearch ? '联网搜索已开启' : '开启联网搜索'" placement="top">
-        <el-button
-          :type="chatStore.enableWebSearch ? 'primary' : 'default'"
-          size="small"
-          circle
-          class="action-btn"
-          @click="chatStore.setEnableWebSearch(!chatStore.enableWebSearch)"
-        >
-          <el-icon :size="14"><Connection /></el-icon>
-        </el-button>
-      </el-tooltip>
-
       <el-tooltip
         :content="chatStore.currentModelSupportsThinking ? (chatStore.enableThinking ? '深度思考已开启' : '开启深度思考') : '当前模型不支持深度思考'"
         placement="top"
@@ -159,7 +147,7 @@
 
 <script setup lang="ts">
 import { ref, computed } from "vue"
-import { Connection, Promotion, MagicStick, VideoPause, Microphone, EditPen, ArrowDown, Select } from "@element-plus/icons-vue"
+import { Promotion, MagicStick, VideoPause, Microphone, EditPen, ArrowDown, Select } from "@element-plus/icons-vue"
 import { ElMessage } from "element-plus"
 import { useChatStore } from "../../stores/chat"
 import { sendMessageStream, transcribeAudio } from "../../api/chat"
@@ -329,6 +317,7 @@ const TOOL_NAMES: Record<string, string> = {
   get_latest_prices: "查询最新价格",
   get_price_history: "查询价格趋势",
   get_price_ranking: "查询涨跌排行",
+  get_category_price_summary: "汇总品类价格",
   web_search: "搜索互联网",
   "分析问题": "分析问题并查询数据",
 }
@@ -396,7 +385,7 @@ async function handleSend() {
       text,
       targetConvId,
       chatStore.enableThinking,
-      chatStore.enableWebSearch,
+      false,
       chatStore.selectedModel,
       {
         onToken(token: string) {

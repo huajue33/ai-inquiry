@@ -22,6 +22,7 @@ from app.services.price_service import (
     get_latest_prices_batch,
     get_price_trend,
     get_price_ranking as get_price_ranking_db,
+    get_category_price_summary as get_category_price_summary_db,
     group_products_for_clarify,
 )
 from app.core.permissions import (
@@ -42,11 +43,16 @@ _allowed_ids_loaded: ContextVar[bool] = ContextVar(
     "_allowed_ids_loaded", default=False
 )
 
+# 单次请求内 search_products 的调用计数（防止模型反复换词重试导致死循环 / 撞递归上限）
+_search_call_count: ContextVar[int] = ContextVar("_search_call_count", default=0)
+MAX_SEARCH_CALLS = 5
+
 
 def reset_permission_cache():
-    """请求开始时清空缓存（chat.py 调用）"""
+    """请求开始时清空请求级缓存与计数（chat.py 调用）"""
     _allowed_ids_cache.set(None)
     _allowed_ids_loaded.set(False)
+    _search_call_count.set(0)
 
 
 def _allowed_ids(db) -> Optional[list[int]]:
@@ -220,6 +226,16 @@ def search_products(
     """
     db = SessionLocal()
     try:
+        # 防死循环：单次请求内 search_products 调用次数超限即拒绝，引导模型停止重试
+        _count = _search_call_count.get() + 1
+        _search_call_count.set(_count)
+        if _count > MAX_SEARCH_CALLS:
+            return _err(
+                "search_limit",
+                "本次已多次搜索，请不要再调用搜索工具。基于已有结果回答；"
+                "若始终没有匹配商品，直接告知用户'未找到相关商品'。",
+            )
+
         no_perm = _check_any_permission(db)
         if no_perm:
             return no_perm
@@ -534,5 +550,69 @@ def get_price_ranking(
             },
             "items": items,
         })
+    finally:
+        db.close()
+
+
+# ============================================================
+# Tool 5: 品类价格概览（聚合，不枚举明细）
+# ============================================================
+
+@tool
+def get_category_price_summary(category: str, as_of: str = "") -> str:
+    """查询某个品类的整体价格概览（区间/均价/中位数 + 品牌分布）。
+
+    适合"X 大概什么价""X 价格行情""X 多少钱"这类**宽泛、品类级**的问题——当某品类下
+    商品很多时，用本工具给出聚合概览，而不是逐个枚举商品（避免遗漏与信息过载）。
+    若用户想要某个具体商品，再用 search_products + get_latest_prices。
+
+    Args:
+        category: 品类/分类名或关键词，例如"土豆""蔬菜""食用油"。必填。
+        as_of: 截止日期 YYYY-MM-DD（可选，默认今天）。
+
+    返回 JSON 字段：
+    - total_products: 该品类（含子分类）下的商品总数
+    - priced_products: 其中有有效报价的商品数
+    - by_unit: [{unit, count, min, max, avg, median}]，按计价单位分别统计（不同单位不混算）
+    - by_brand: [{brand, count, avg, unit}]，主流单位下按数量排前几的品牌均价
+    - hint: 无数据时的说明
+    """
+    db = SessionLocal()
+    try:
+        no_perm = _check_any_permission(db)
+        if no_perm:
+            return no_perm
+
+        if not category or not category.strip():
+            return _err("invalid_input", "请提供要查询的品类名，例如'土豆''蔬菜'")
+
+        category_ids, err = _resolve_category_filter(db, category)
+        if err:
+            return err
+        if not category_ids:
+            return _err("category_not_found", f"未找到名为'{category}'的分类", name=category)
+
+        if as_of:
+            try:
+                as_of_date = date.fromisoformat(as_of)
+            except ValueError:
+                return _err("invalid_input", f"as_of 日期格式错误：{as_of}，应为 YYYY-MM-DD")
+        else:
+            as_of_date = date.today()
+
+        summary = get_category_price_summary_db(db, category_ids, as_of_date)
+
+        if not summary or summary.get("priced_products", 0) == 0:
+            return _ok({
+                "category": category,
+                "as_of": str(as_of_date),
+                "total_products": summary.get("total_products", 0) if summary else 0,
+                "priced_products": 0,
+                "by_unit": [],
+                "by_brand": [],
+                "hint": f"'{category}'分类下暂无有效价格数据",
+            })
+
+        return _ok({"category": category, "as_of": str(as_of_date), **summary})
     finally:
         db.close()

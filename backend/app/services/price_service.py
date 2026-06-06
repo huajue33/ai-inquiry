@@ -398,3 +398,91 @@ def _extract_core_name(product) -> str:
         base = product.base_name[:6] if product.base_name else product.product_name[:6]
 
     return base
+
+
+# 品类价格聚合：参与汇总的最大产品数（防止超大分类拉爆 IN 查询）
+_SUMMARY_MAX_PRODUCTS = 2000
+
+
+def get_category_price_summary(db: Session, category_ids: list[int], as_of: date = None) -> dict:
+    """对一个品类（含子树）做价格概览聚合，不返回明细。
+
+    生鲜价格不是每天更新，这里复用 get_latest_prices_batch 的"向前回溯"取每个产品
+    截至 as_of 的有效价。不同计价单位（元/斤、元/袋）分别统计，避免混算。
+
+    Returns:
+        dict: {
+          total_products, priced_products, truncated,
+          by_unit: [{unit, count, min, max, avg, median}],   # 按数量降序
+          by_brand: [{brand, count, avg, unit}],              # 主流单位下，按数量取前若干品牌
+        }
+        无产品时返回 {"total_products": 0, ...}
+    """
+    if as_of is None:
+        as_of = date.today()
+
+    rows = (
+        db.query(Product.product_id, Product.brand)
+        .filter(Product.category_id.in_(category_ids))
+        .all()
+    )
+    total_products = len(rows)
+    truncated = total_products > _SUMMARY_MAX_PRODUCTS
+    rows = rows[:_SUMMARY_MAX_PRODUCTS]
+    pids = [r[0] for r in rows]
+    brand_map = {r[0]: (r[1] or "未标注") for r in rows}
+
+    if not pids:
+        return {"total_products": 0, "priced_products": 0, "truncated": False,
+                "by_unit": [], "by_brand": []}
+
+    price_map = get_latest_prices_batch(db, pids, as_of_date=as_of)
+
+    # 按单位聚合价格；同时记录 品牌×单位 的价格
+    unit_prices: dict[str, list[float]] = {}
+    brand_unit_prices: dict[tuple[str, str], list[float]] = {}
+    for pid in pids:
+        pr = price_map.get(pid)
+        if not pr:
+            continue
+        unit = pr.price_unit or ""
+        val = float(pr.price_value)
+        unit_prices.setdefault(unit, []).append(val)
+        brand_unit_prices.setdefault((brand_map[pid], unit), []).append(val)
+
+    priced_products = sum(len(v) for v in unit_prices.values())
+
+    def _stats(vals: list[float]) -> dict:
+        s = sorted(vals)
+        n = len(s)
+        med = s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2
+        return {
+            "count": n,
+            "min": round(s[0], 2),
+            "max": round(s[-1], 2),
+            "avg": round(sum(s) / n, 2),
+            "median": round(med, 2),
+        }
+
+    by_unit = sorted(
+        ({"unit": u, **_stats(v)} for u, v in unit_prices.items() if v),
+        key=lambda x: x["count"], reverse=True,
+    )
+
+    # 主流单位下按品牌汇总，取数量前 8
+    by_brand = []
+    if by_unit:
+        main_unit = by_unit[0]["unit"]
+        brand_rows = [
+            {"brand": b, "unit": u, "count": len(v), "avg": round(sum(v) / len(v), 2)}
+            for (b, u), v in brand_unit_prices.items() if u == main_unit and v
+        ]
+        by_brand = sorted(brand_rows, key=lambda x: x["count"], reverse=True)[:8]
+
+    return {
+        "total_products": total_products,
+        "priced_products": priced_products,
+        "truncated": truncated,
+        "by_unit": by_unit,
+        "by_brand": by_brand,
+    }
