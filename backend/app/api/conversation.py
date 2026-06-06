@@ -1,11 +1,11 @@
 import uuid
-import asyncio
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
+from starlette.concurrency import run_in_threadpool
 
 from app.database import get_db, SessionLocal
 from app.models.user import User
@@ -58,13 +58,17 @@ class SaveMessageRequest(BaseModel):
     total_tokens: int = 0
 
 
-def _generate_title_background(conversation_id: str, user_message: str):
-    """后台任务：用 LLM 生成标题并更新数据库"""
-    import asyncio
+async def _generate_title_background(conversation_id: str, user_message: str):
+    """后台任务：用 LLM 生成标题并更新数据库。
+
+    FastAPI 的 BackgroundTasks 原生支持 async 函数，会在响应返回后于事件循环中
+    被正确 await，无需手动管理事件循环。
+    """
     from app.services.title_service import generate_title
 
-    async def _run():
-        title = await generate_title(user_message)
+    title = await generate_title(user_message)
+
+    def _persist():
         db = SessionLocal()
         try:
             conv = db.query(Conversation).filter(Conversation.id == conversation_id).first()
@@ -74,15 +78,8 @@ def _generate_title_background(conversation_id: str, user_message: str):
         finally:
             db.close()
 
-    # 在新的事件循环中运行（因为 BackgroundTasks 不是 async）
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            asyncio.ensure_future(_run())
-        else:
-            asyncio.run(_run())
-    except RuntimeError:
-        asyncio.run(_run())
+    # 同步 DB 写入放线程池，避免阻塞事件循环
+    await run_in_threadpool(_persist)
 
 
 @router.get("/", response_model=ConversationList)

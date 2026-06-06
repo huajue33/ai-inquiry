@@ -14,6 +14,12 @@ class Settings(BaseSettings):
     db_password: str = ""
     db_name: str = "quotation"
 
+    # 连接池：默认值偏小容易在并发时排队等连接。
+    # 总连接数 ≈ worker 数 ×（db_pool_size + db_max_overflow），需 ≤ MySQL max_connections。
+    db_pool_size: int = 10
+    db_max_overflow: int = 20
+    db_pool_recycle: int = 3600
+
     meili_url: str = "http://127.0.0.1:7700"
     meili_master_key: str = ""
 

@@ -358,12 +358,6 @@ async function handleSend() {
             total_tokens: data.usage?.total_tokens || 0,
           }, targetConvId)
           chatStore.setToolStatus("", targetConvId)
-          // 保存 AI 回复到后端
-          const state = chatStore.messages
-          const lastMsg = state[state.length - 1]
-          if (lastMsg && lastMsg.role === "assistant") {
-            chatStore.persistMessage(lastMsg, targetConvId)
-          }
           chatStore.loadConversations()
         },
         onError(error: string) {

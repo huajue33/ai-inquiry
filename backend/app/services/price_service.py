@@ -3,8 +3,9 @@ from sqlalchemy import func, desc, and_, or_
 from datetime import date, timedelta
 import logging
 
-from app.models.product import Product, Category
+from app.models.product import Product
 from app.models.price import Price
+from app.services.category_cache import get_all_categories
 
 logger = logging.getLogger(__name__)
 
@@ -92,17 +93,14 @@ def _resolve_keyword_to_category_subtree(db: Session, keyword: str) -> list[int]
     """
     canonical = _CATEGORY_ALIASES.get(keyword, keyword)
 
+    all_cats = get_all_categories()
+
     # 找名字等于 canonical 的分类
-    matched = (
-        db.query(Category)
-        .filter(Category.name == canonical)
-        .all()
-    )
+    matched = [c for c in all_cats if c.name == canonical]
     if not matched:
         return None
 
     # 收集每个匹配分类的子树 ID（含自身）
-    all_cats = db.query(Category).all()
     parent_to_children: dict[int, list[int]] = {}
     for c in all_cats:
         if c.parent_id:

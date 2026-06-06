@@ -44,6 +44,11 @@ services:
       DB_USER: ${DB_USER:-root}
       DB_PASSWORD: ${DB_PASSWORD}
       DB_NAME: ${DB_NAME}
+      # 连接池（可按 MySQL max_connections 调整）
+      DB_POOL_SIZE: ${DB_POOL_SIZE:-10}
+      DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-20}
+      # uvicorn worker 数（2 核 2G 建议 1~2）
+      UVICORN_WORKERS: ${UVICORN_WORKERS:-2}
       MEILI_URL: http://meilisearch:7700
       MEILI_MASTER_KEY: ${MEILI_MASTER_KEY}
       JWT_SECRET: ${JWT_SECRET}

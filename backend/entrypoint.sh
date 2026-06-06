@@ -24,4 +24,7 @@ for i in $(seq 1 30); do
 done
 
 # 启动 FastAPI（lifespan 内会按需自动同步索引）
-exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips='*'
+# UVICORN_WORKERS 可按 CPU 核数与内存调整；2 核 2G 建议 1~2，每个 worker 会各自加载
+exec uvicorn app.main:app --host 0.0.0.0 --port 8000 \
+  --proxy-headers --forwarded-allow-ips='*' \
+  --workers "${UVICORN_WORKERS:-1}"

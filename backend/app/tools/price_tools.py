@@ -16,7 +16,7 @@ from typing import Optional
 from langchain_core.tools import tool
 
 from app.database import SessionLocal
-from app.models.product import Product, Category
+from app.models.product import Product
 from app.services.price_service import (
     search_products as search_products_db,
     get_latest_prices_batch,
@@ -29,6 +29,7 @@ from app.core.permissions import (
     get_allowed_category_ids,
     intersect_category_ids,
 )
+from app.services.category_cache import get_all_categories
 
 logger = logging.getLogger(__name__)
 
@@ -108,7 +109,7 @@ def _resolve_category_filter(db, category_name: str):
         return _allowed_ids(db), None
 
     # 展开分类树（一次查询所有分类，内存里 BFS）
-    all_cats = db.query(Category).all()
+    all_cats = get_all_categories()
     matched_ids = {c.id for c in all_cats if category_name in c.name}
     if not matched_ids:
         return None, _err(
@@ -177,7 +178,7 @@ def _filter_allowed_products(db, product_ids: list[int]):
 
 def _build_category_path_map(db) -> dict[int, str]:
     """一次查询，构建 category_id → '一级 > 二级 > 三级' 路径映射"""
-    cats = {c.id: c for c in db.query(Category).all()}
+    cats = {c.id: c for c in get_all_categories()}
     result = {}
     for cat_id, cat in cats.items():
         names = []

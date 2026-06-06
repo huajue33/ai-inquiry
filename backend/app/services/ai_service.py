@@ -1,7 +1,10 @@
 import json
+import logging
+import time
 from datetime import date
 from typing import AsyncGenerator
 
+from starlette.concurrency import run_in_threadpool
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, ToolMessage
 
 from app.config import get_settings
@@ -12,7 +15,9 @@ from app.models.product import Category
 from app.models.permission import UserCategoryPermission
 from app.services.agent import agent, agent_web, openai_client
 from app.services.history import load_history
+from app.services.persistence import save_assistant_message
 
+logger = logging.getLogger(__name__)
 settings = get_settings()
 
 
@@ -62,27 +67,63 @@ def _build_runtime_context() -> str:
 # ── 流式入口 ────────────────────────────────────────────
 
 async def chat_stream(message: str, conversation_id: str, enable_thinking: bool = False, enable_web_search: bool = False) -> AsyncGenerator[str, None]:
-    """根据模式分派到常规流式或思考流式，以SSE格式输出AI回复"""
+    """根据模式分派到常规流式或思考流式，以SSE格式输出AI回复。
+
+    无论正常结束还是客户端中途断开（关闭页面/点停止），都会在 finally 中由服务端
+    兜底持久化助手消息，内容/思考/usage/duration 以服务端为准。
+    """
+    # 累加器：内层函数边产出边写入，供流结束后持久化
+    acc = {
+        "content": "",
+        "thinking": "",
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        "suggestions": [],
+    }
+    user = current_user_var.get()
+    started_at = time.monotonic()
+
     try:
         if enable_thinking:
-            async for chunk in _stream_with_thinking(message, conversation_id, enable_web_search):
+            async for chunk in _stream_with_thinking(message, conversation_id, enable_web_search, acc):
                 yield chunk
         else:
-            async for chunk in _stream_normal(message, conversation_id, enable_web_search):
+            async for chunk in _stream_normal(message, conversation_id, enable_web_search, acc):
                 yield chunk
 
     except Exception as e:
         error_data = {"event": "error", "data": str(e)}
         yield f"data: {json.dumps(error_data, ensure_ascii=False)}\n\n"
 
+    finally:
+        # 同步落库：finally 在协程被取消（客户端断开）时仍会执行，
+        # 这里不做 await，避免在取消阶段再次被取消而中断写入。
+        duration_ms = int((time.monotonic() - started_at) * 1000)
+        if user is not None and (acc["content"] or acc["thinking"]):
+            try:
+                save_assistant_message(
+                    conversation_id=conversation_id,
+                    user_id=user.id,
+                    content=acc["content"],
+                    thinking=acc["thinking"],
+                    suggestions=acc["suggestions"],
+                    duration_ms=duration_ms,
+                    usage=acc["usage"],
+                )
+            except Exception as e:
+                logger.warning(f"流结束时持久化助手消息失败: {e}")
 
-async def _stream_normal(message: str, conversation_id: str, enable_web_search: bool = False) -> AsyncGenerator[str, None]:
+
+async def _stream_normal(message: str, conversation_id: str, enable_web_search: bool = False, acc: dict = None) -> AsyncGenerator[str, None]:
     """普通流式输出：LangGraph Agent + 工具调用"""
+    if acc is None:
+        acc = {}
     usage_data = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
     _agent = agent_web if enable_web_search else agent
-    history = load_history(conversation_id)
-    runtime_context = _build_runtime_context()
+    # 这两个调用内部是同步 DB 查询（load_history 还可能触发同步的摘要 LLM 调用），
+    # 放进线程池执行，避免阻塞事件循环影响并发。
+    history = await run_in_threadpool(load_history, conversation_id)
+    runtime_context = await run_in_threadpool(_build_runtime_context)
 
     messages = [
         SystemMessage(content=SYSTEM_PROMPT),
@@ -105,6 +146,7 @@ async def _stream_normal(message: str, conversation_id: str, enable_web_search: 
                 token = chunk.content
                 if token:
                     has_emitted_token = True
+                    acc["content"] = acc.get("content", "") + token
                     yield f"data: {json.dumps({'event': 'token', 'data': token}, ensure_ascii=False)}\n\n"
             if hasattr(chunk, "usage_metadata") and chunk.usage_metadata:
                 um = chunk.usage_metadata
@@ -136,12 +178,17 @@ async def _stream_normal(message: str, conversation_id: str, enable_web_search: 
 
     if not has_emitted_token:
         fallback = last_tool_output or "抱歉，没能从数据库找到匹配的结果。请尝试更具体的产品名或换个问法。"
+        acc["content"] = acc.get("content", "") + fallback
         yield f"data: {json.dumps({'event': 'token', 'data': fallback}, ensure_ascii=False)}\n\n"
+
+    suggestions = ["查询今日蔬菜价格", "对比不同品牌食用油价格", "查看近7天鸡蛋价格趋势"]
+    acc["usage"] = usage_data
+    acc["suggestions"] = suggestions
 
     done_data = {
         "event": "done",
         "data": {
-            "suggestions": ["查询今日蔬菜价格", "对比不同品牌食用油价格", "查看近7天鸡蛋价格趋势"],
+            "suggestions": suggestions,
             "conversation_id": conversation_id,
             "usage": usage_data,
         }
@@ -149,13 +196,16 @@ async def _stream_normal(message: str, conversation_id: str, enable_web_search: 
     yield f"data: {json.dumps(done_data, ensure_ascii=False)}\n\n"
 
 
-async def _stream_with_thinking(message: str, conversation_id: str, enable_web_search: bool = False) -> AsyncGenerator[str, None]:
+async def _stream_with_thinking(message: str, conversation_id: str, enable_web_search: bool = False, acc: dict = None) -> AsyncGenerator[str, None]:
     """思考模式：Agent 收集工具数据 → 思考 LLM 深度分析"""
+    if acc is None:
+        acc = {}
     yield f"data: {json.dumps({'event': 'tool_start', 'data': '分析问题'}, ensure_ascii=False)}\n\n"
 
     _agent = agent_web if enable_web_search else agent
-    history = load_history(conversation_id)
-    runtime_context = _build_runtime_context()
+    # 同上：同步 DB / 摘要调用放线程池，避免阻塞事件循环。
+    history = await run_in_threadpool(load_history, conversation_id)
+    runtime_context = await run_in_threadpool(_build_runtime_context)
 
     messages = [
         SystemMessage(content=SYSTEM_PROMPT),
@@ -210,20 +260,27 @@ async def _stream_with_thinking(message: str, conversation_id: str, enable_web_s
         delta = chunk.choices[0].delta
 
         if hasattr(delta, "reasoning_content") and delta.reasoning_content:
+            acc["thinking"] = acc.get("thinking", "") + delta.reasoning_content
             yield f"data: {json.dumps({'event': 'thinking_token', 'data': delta.reasoning_content}, ensure_ascii=False)}\n\n"
 
         if hasattr(delta, "content") and delta.content:
             has_emitted_token = True
+            acc["content"] = acc.get("content", "") + delta.content
             yield f"data: {json.dumps({'event': 'token', 'data': delta.content}, ensure_ascii=False)}\n\n"
 
     if not has_emitted_token:
         fallback = tool_output or "抱歉，没能从数据库找到匹配的结果。"
+        acc["content"] = acc.get("content", "") + fallback
         yield f"data: {json.dumps({'event': 'token', 'data': fallback}, ensure_ascii=False)}\n\n"
+
+    suggestions = ["查询今日蔬菜价格", "对比不同品牌食用油价格", "查看近7天鸡蛋价格趋势"]
+    acc["usage"] = usage_data
+    acc["suggestions"] = suggestions
 
     done_data = {
         "event": "done",
         "data": {
-            "suggestions": ["查询今日蔬菜价格", "对比不同品牌食用油价格", "查看近7天鸡蛋价格趋势"],
+            "suggestions": suggestions,
             "conversation_id": conversation_id,
             "usage": usage_data,
         }
