@@ -38,7 +38,7 @@ export async function sendMessageStream(
     onThinkingToken?: (token: string) => void
     onToolStart?: (toolName: string) => void
     onToolEnd?: (toolName: string) => void
-    onDone: (data: { suggestions: string[]; conversation_id: string; usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number } }) => void
+    onDone: (data: { suggestions: string[]; conversation_id: string; content?: string; usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number } }) => void
     onError: (error: string) => void
   },
   abortSignal?: AbortSignal

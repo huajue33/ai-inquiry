@@ -263,11 +263,11 @@ function renderMarkdown(content: string): string {
   // 先正常渲染 markdown
   let html = md.render(content)
 
-  // 在渲染后的 HTML 中处理 {#id=xxx} 标记
+  // 在渲染后的 HTML 中处理 {#id=xxx} 标记（兼容模型偶发的双括号 {{#id=xxx}}）
   // 标记可能出现在 <td>、<li>、<p> 等元素内部
   // 匹配：一段文本 + {#id=数字}
   html = html.replace(
-    /([^<>{}\n]*?)\{#id=(\d+)\}/g,
+    /([^<>{}\n]*?)\{{1,2}#id=(\d+)\}{1,2}/g,
     (_match, textBefore, productId) => {
       let name = textBefore.trim()
       if (!name) return ''

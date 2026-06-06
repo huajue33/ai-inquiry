@@ -423,6 +423,8 @@ async function handleSend() {
             prompt_tokens: data.usage?.prompt_tokens || 0,
             completion_tokens: data.usage?.completion_tokens || 0,
             total_tokens: data.usage?.total_tokens || 0,
+            // 服务端清洗过的最终文本（剥离了幻觉的产品链接标记），以它为准
+            ...(data.content != null ? { content: data.content } : {}),
           }, targetConvId)
           chatStore.setToolStatus("", targetConvId)
           chatStore.loadConversations()

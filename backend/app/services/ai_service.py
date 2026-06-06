@@ -1,25 +1,69 @@
 import json
 import logging
+import re
 import time
 from datetime import date
 from typing import AsyncGenerator
 
 from starlette.concurrency import run_in_threadpool
-from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, ToolMessage
+from langchain_core.messages import SystemMessage, HumanMessage
 
-from app.config import get_settings
 from app.core.prompts import SYSTEM_PROMPT
 from app.core.permissions import current_user_var
 from app.core.models import resolve_model, model_supports_thinking
 from app.database import SessionLocal
 from app.models.product import Category
 from app.models.permission import UserCategoryPermission
-from app.services.agent import get_agents, openai_client
+from app.services.agent import get_agents
 from app.services.history import load_history
 from app.services.persistence import save_assistant_message
 
 logger = logging.getLogger(__name__)
-settings = get_settings()
+
+
+# ── 产品 ID 标记校验（防幻觉链接） ──────────────────────
+
+_PRODUCT_ID_RE = re.compile(r'"product_id"\s*:\s*(\d+)')
+# 兼容模型可能输出的单括号 {#id=N} 或双括号 {{#id=N}}
+_ID_MARKER_RE = re.compile(r"\{{1,2}#id=(\d+)\}{1,2}")
+
+
+def _collect_valid_ids(history, tool_output: str) -> set[int]:
+    """收集本轮"可信"的 product_id 集合：
+
+    - 本轮工具返回结果中的 product_id（"product_id": N）
+    - 历史消息文本中出现过的 product_id 与 {#id=N} 标记
+
+    历史也纳入，避免误删"复用上一轮 ID"（如用户说"第二个"）的合法链接。
+    """
+    valid: set[int] = set()
+    for m in history or []:
+        content = getattr(m, "content", "")
+        if isinstance(content, str) and content:
+            valid.update(int(x) for x in _PRODUCT_ID_RE.findall(content))
+            valid.update(int(x) for x in _ID_MARKER_RE.findall(content))
+    if tool_output:
+        valid.update(int(x) for x in _PRODUCT_ID_RE.findall(tool_output))
+    return valid
+
+
+def _scrub_invalid_id_markers(content: str, valid_ids: set[int]) -> str:
+    """归一化 {#id=N} 标记并剥离幻觉链接：
+
+    - 统一把单/双括号归一化为单括号 `{#id=N}`（修正模型偶发的双括号，否则前端会渲染出 `{}`）。
+    - valid_ids 非空时，剥离其中不可信的 id（既不在本轮工具结果、也不在历史里）。
+    - **valid_ids 为空时 fail-open**：只归一化、不删除，避免在收集失败/纯对话场景误删合法链接。
+    """
+    if not content:
+        return content
+
+    def _repl(match: "re.Match") -> str:
+        pid = int(match.group(1))
+        if valid_ids and pid not in valid_ids:
+            return ""  # 确认为编造的 ID → 去掉标记（保留前面的文字）
+        return "{#id=%d}" % pid  # 归一化为单括号
+
+    return _ID_MARKER_RE.sub(_repl, content)
 
 
 # ── 运行时上下文 ────────────────────────────────────────
@@ -75,6 +119,8 @@ async def chat_stream(message: str, conversation_id: str, enable_thinking: bool 
     """
     # 模型收敛为白名单内的合法值（非法/缺省回退默认模型）
     model = resolve_model(model)
+    # 仅当模型支持思考时才真正开启（避免对不支持的模型发 enable_thinking）
+    thinking = bool(enable_thinking) and model_supports_thinking(model)
 
     # 累加器：内层函数边产出边写入，供流结束后持久化
     acc = {
@@ -87,12 +133,8 @@ async def chat_stream(message: str, conversation_id: str, enable_thinking: bool 
     started_at = time.monotonic()
 
     try:
-        if enable_thinking:
-            async for chunk in _stream_with_thinking(message, conversation_id, enable_web_search, acc, model):
-                yield chunk
-        else:
-            async for chunk in _stream_normal(message, conversation_id, enable_web_search, acc, model):
-                yield chunk
+        async for chunk in _stream(message, conversation_id, enable_web_search, acc, model, thinking):
+            yield chunk
 
     except Exception as e:
         error_data = {"event": "error", "data": str(e)}
@@ -117,16 +159,18 @@ async def chat_stream(message: str, conversation_id: str, enable_thinking: bool 
                 logger.warning(f"流结束时持久化助手消息失败: {e}")
 
 
-async def _stream_normal(message: str, conversation_id: str, enable_web_search: bool = False, acc: dict = None, model: str | None = None) -> AsyncGenerator[str, None]:
-    """普通流式输出：LangGraph Agent + 工具调用"""
-    if acc is None:
-        acc = {}
+async def _stream(message: str, conversation_id: str, enable_web_search: bool, acc: dict, model: str, thinking: bool) -> AsyncGenerator[str, None]:
+    """统一的单次流式：LangGraph Agent + 工具调用（+ 可选思考）。
+
+    thinking=True 时使用开启 reasoning 的 Agent，在同一次流式里同时产出
+    思考过程（thinking_token）、工具调用与最终回答，无需两段式。
+    """
     usage_data = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
-    agent, agent_web = get_agents(resolve_model(model))
+    agent, agent_web = get_agents(model, thinking)
     _agent = agent_web if enable_web_search else agent
-    # 这两个调用内部是同步 DB 查询（load_history 还可能触发同步的摘要 LLM 调用），
-    # 放进线程池执行，避免阻塞事件循环影响并发。
+
+    # 同步 DB 查询放线程池，避免阻塞事件循环
     history = await run_in_threadpool(load_history, conversation_id)
     runtime_context = await run_in_threadpool(_build_runtime_context)
 
@@ -139,21 +183,27 @@ async def _stream_normal(message: str, conversation_id: str, enable_web_search: 
 
     has_emitted_token = False
     last_tool_output = ""
+    all_tool_outputs: list[str] = []
 
-    async for event in _agent.astream_events(
-        {"messages": messages}, version="v2"
-    ):
+    async for event in _agent.astream_events({"messages": messages}, version="v2"):
         kind = event["event"]
 
         if kind == "on_chat_model_stream":
             chunk = event["data"]["chunk"]
-            if hasattr(chunk, "content") and chunk.content:
-                token = chunk.content
-                if token:
-                    has_emitted_token = True
-                    acc["content"] = acc.get("content", "") + token
-                    yield f"data: {json.dumps({'event': 'token', 'data': token}, ensure_ascii=False)}\n\n"
-            if hasattr(chunk, "usage_metadata") and chunk.usage_metadata:
+
+            # 思考过程（reasoning_content 由 ReasoningChatOpenAI 透出到 additional_kwargs）
+            rc = getattr(chunk, "additional_kwargs", {}).get("reasoning_content")
+            if rc:
+                acc["thinking"] = acc.get("thinking", "") + rc
+                yield f"data: {json.dumps({'event': 'thinking_token', 'data': rc}, ensure_ascii=False)}\n\n"
+
+            token = getattr(chunk, "content", "")
+            if token:
+                has_emitted_token = True
+                acc["content"] = acc.get("content", "") + token
+                yield f"data: {json.dumps({'event': 'token', 'data': token}, ensure_ascii=False)}\n\n"
+
+            if getattr(chunk, "usage_metadata", None):
                 um = chunk.usage_metadata
                 usage_data["prompt_tokens"] += um.get("input_tokens", 0)
                 usage_data["completion_tokens"] += um.get("output_tokens", 0)
@@ -161,7 +211,7 @@ async def _stream_normal(message: str, conversation_id: str, enable_web_search: 
 
         elif kind == "on_chat_model_end":
             output = event.get("data", {}).get("output")
-            if output and hasattr(output, "usage_metadata") and output.usage_metadata:
+            if output and getattr(output, "usage_metadata", None):
                 um = output.usage_metadata
                 usage_data["prompt_tokens"] += um.get("input_tokens", 0)
                 usage_data["completion_tokens"] += um.get("output_tokens", 0)
@@ -176,7 +226,9 @@ async def _stream_normal(message: str, conversation_id: str, enable_web_search: 
             output = event.get("data", {}).get("output")
             if output is not None:
                 try:
-                    last_tool_output = str(output)[:600]
+                    out_str = str(output)
+                    last_tool_output = out_str[:600]
+                    all_tool_outputs.append(out_str)
                 except Exception:
                     pass
             yield f"data: {json.dumps({'event': 'tool_end', 'data': tool_name}, ensure_ascii=False)}\n\n"
@@ -186,99 +238,9 @@ async def _stream_normal(message: str, conversation_id: str, enable_web_search: 
         acc["content"] = acc.get("content", "") + fallback
         yield f"data: {json.dumps({'event': 'token', 'data': fallback}, ensure_ascii=False)}\n\n"
 
-    suggestions = ["查询今日蔬菜价格", "对比不同品牌食用油价格", "查看近7天鸡蛋价格趋势"]
-    acc["usage"] = usage_data
-    acc["suggestions"] = suggestions
-
-    done_data = {
-        "event": "done",
-        "data": {
-            "suggestions": suggestions,
-            "conversation_id": conversation_id,
-            "usage": usage_data,
-        }
-    }
-    yield f"data: {json.dumps(done_data, ensure_ascii=False)}\n\n"
-
-
-async def _stream_with_thinking(message: str, conversation_id: str, enable_web_search: bool = False, acc: dict = None, model: str | None = None) -> AsyncGenerator[str, None]:
-    """思考模式：Agent 收集工具数据 → 思考 LLM 深度分析"""
-    if acc is None:
-        acc = {}
-    model = resolve_model(model)
-    yield f"data: {json.dumps({'event': 'tool_start', 'data': '分析问题'}, ensure_ascii=False)}\n\n"
-
-    agent, agent_web = get_agents(model)
-    _agent = agent_web if enable_web_search else agent
-    # 同上：同步 DB / 摘要调用放线程池，避免阻塞事件循环。
-    history = await run_in_threadpool(load_history, conversation_id)
-    runtime_context = await run_in_threadpool(_build_runtime_context)
-
-    messages = [
-        SystemMessage(content=SYSTEM_PROMPT),
-        SystemMessage(content=runtime_context),
-        *history,
-        HumanMessage(content=message),
-    ]
-
-    try:
-        state = await _agent.ainvoke({"messages": messages})
-        tool_output = "\n".join(
-            msg.content[:600] for msg in state["messages"]
-            if isinstance(msg, ToolMessage)
-        ) or next((msg.content for msg in reversed(state["messages"])
-                   if isinstance(msg, AIMessage) and msg.content), "")
-    except Exception as e:
-        tool_output = f"工具调用出错: {str(e)}"
-
-    yield f"data: {json.dumps({'event': 'tool_end', 'data': '分析问题'}, ensure_ascii=False)}\n\n"
-
-    thinking_prompt = f"""你是一个B端采销询价助手。
-
-{runtime_context}
-
-用户问题：{message}
-
-以下是通过工具查询到的数据：
-{tool_output}
-
-请基于以上数据，给用户一个专业、详细的回答。如果数据中有价格信息，请整理成清晰的格式；
-如果数据显示无权访问，请直接告知用户没有该分类的查询权限。"""
-
-    completion = await openai_client.chat.completions.create(
-        model=model,
-        messages=[{"role": "user", "content": thinking_prompt}],
-        extra_body={"enable_thinking": model_supports_thinking(model)},
-        stream=True,
-        stream_options={"include_usage": True},
-    )
-
-    usage_data = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
-    has_emitted_token = False
-
-    async for chunk in completion:
-        if not chunk.choices:
-            if hasattr(chunk, "usage") and chunk.usage:
-                usage_data["prompt_tokens"] = chunk.usage.prompt_tokens or 0
-                usage_data["completion_tokens"] = chunk.usage.completion_tokens or 0
-                usage_data["total_tokens"] = chunk.usage.total_tokens or 0
-            continue
-
-        delta = chunk.choices[0].delta
-
-        if hasattr(delta, "reasoning_content") and delta.reasoning_content:
-            acc["thinking"] = acc.get("thinking", "") + delta.reasoning_content
-            yield f"data: {json.dumps({'event': 'thinking_token', 'data': delta.reasoning_content}, ensure_ascii=False)}\n\n"
-
-        if hasattr(delta, "content") and delta.content:
-            has_emitted_token = True
-            acc["content"] = acc.get("content", "") + delta.content
-            yield f"data: {json.dumps({'event': 'token', 'data': delta.content}, ensure_ascii=False)}\n\n"
-
-    if not has_emitted_token:
-        fallback = tool_output or "抱歉，没能从数据库找到匹配的结果。"
-        acc["content"] = acc.get("content", "") + fallback
-        yield f"data: {json.dumps({'event': 'token', 'data': fallback}, ensure_ascii=False)}\n\n"
+    # 剥离幻觉的 {#id=N} 标记（不在本轮工具结果/历史中的 ID）
+    valid_ids = _collect_valid_ids(history, "\n".join(all_tool_outputs))
+    acc["content"] = _scrub_invalid_id_markers(acc.get("content", ""), valid_ids)
 
     suggestions = ["查询今日蔬菜价格", "对比不同品牌食用油价格", "查看近7天鸡蛋价格趋势"]
     acc["usage"] = usage_data
@@ -290,6 +252,7 @@ async def _stream_with_thinking(message: str, conversation_id: str, enable_web_s
             "suggestions": suggestions,
             "conversation_id": conversation_id,
             "usage": usage_data,
+            "content": acc["content"],
         }
     }
     yield f"data: {json.dumps(done_data, ensure_ascii=False)}\n\n"

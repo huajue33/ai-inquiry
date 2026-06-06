@@ -4,19 +4,23 @@
       <stop offset="0%" stop-color="#409eff"/>
       <stop offset="100%" stop-color="#6366f1"/>
     </linearGradient>
+    <linearGradient id="yenGrad" x1="26" y1="20" x2="38" y2="38">
+      <stop offset="0%" stop-color="#409eff"/>
+      <stop offset="100%" stop-color="#6366f1"/>
+    </linearGradient>
   </defs>
-  <!-- 圆角方形背景 -->
+
+  <!-- 圆角方形背景（品牌渐变） -->
   <rect width="64" height="64" rx="14" fill="url(#bgGrad)"/>
-  <!-- 价格标签/询价图标 -->
-  <path d="M20 18h14l10 10v18a2 2 0 0 1-2 2H20a2 2 0 0 1-2-2V20a2 2 0 0 1 2-2z" fill="rgba(255,255,255,0.2)"/>
-  <!-- 放大镜（搜索/查询） -->
-  <circle cx="30" cy="32" r="9" stroke="#fff" stroke-width="2.5" fill="none"/>
-  <line x1="36.5" y1="38.5" x2="43" y2="45" stroke="#fff" stroke-width="2.5" stroke-linecap="round"/>
-  <!-- 价格趋势线 -->
-  <polyline points="24,35 28,30 31,33 35,28" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
-  <!-- 小圆点（数据点） -->
-  <circle cx="24" cy="35" r="1.5" fill="#fff"/>
-  <circle cx="28" cy="30" r="1.5" fill="#fff"/>
-  <circle cx="31" cy="33" r="1.5" fill="#fff"/>
-  <circle cx="35" cy="28" r="1.5" fill="#fff"/>
+
+  <!-- 对话气泡（AI 助手），白色 + 左下尾巴 -->
+  <path d="M16 14h32a6 6 0 0 1 6 6v18a6 6 0 0 1-6 6H28l-9 7.5a1.4 1.4 0 0 1-2.3-1.1V44h-0.7a6 6 0 0 1-6-6V20a6 6 0 0 1 6-6z" fill="#fff"/>
+
+  <!-- 人民币符号 ¥（询价/价格），品牌渐变描边 -->
+  <g stroke="url(#yenGrad)" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <path d="M26 21l6 7 6-7"/>
+    <line x1="32" y1="28" x2="32" y2="38"/>
+    <line x1="26.5" y1="30.5" x2="37.5" y2="30.5"/>
+    <line x1="26.5" y1="34" x2="37.5" y2="34"/>
+  </g>
 </svg>

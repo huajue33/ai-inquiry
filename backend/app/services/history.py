@@ -1,35 +1,43 @@
-from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
-from langchain_openai import ChatOpenAI
+"""对话历史加载：按 token 预算的滑动窗口。
 
-from app.config import get_settings
+设计取舍（询价场景）：
+- 对话多为"短、事务性"的一问一答，追问（"第二个""刚才那个""对比一下"）几乎只引用
+  紧邻的上一轮。因此保留最近若干轮的**完整文本**远比"摘要很多轮"更有价值，尤其要
+  完整保留 {#id=N} 标记、价格、品名，让 ID 复用可靠。
+- 不再做 150 字截断、不再做 LLM 摘要（有损 + 多一次调用 + 失败点）。
+- 从最近往前累加，直到 token 预算用尽即停（硬窗口）；按"轮"对齐，窗口从用户消息开始。
+"""
+from langchain_core.messages import HumanMessage, AIMessage
+
 from app.database import SessionLocal
 from app.models.conversation import ChatMessage as ChatMessageModel
 
-# 摘要用 LLM（惰性初始化，无 streaming）
-_summary_llm: ChatOpenAI | None = None
+# 上下文窗口的 token 预算
+MAX_CONTEXT_TOKENS = 2500
+# 单条消息字符上限（仅防止极端长消息撑爆窗口；远高于足以容纳 ID/价格的长度）
+MAX_MSG_CHARS = 1200
+# 最多从 DB 取多少条参与窗口计算（限制查询规模）
+MAX_DB_MESSAGES = 30
 
 
-def _get_summary_llm() -> ChatOpenAI:
-    """惰性初始化并返回用于对话摘要的LLM实例"""
-    global _summary_llm
-    if _summary_llm is None:
-        settings = get_settings()
-        _summary_llm = ChatOpenAI(
-            base_url=settings.dashscope_base_url,
-            api_key=settings.dashscope_api_key,
-            model=settings.dashscope_model,
-        )
-    return _summary_llm
+def _estimate_tokens(text: str) -> int:
+    """粗略估算 token 数：CJK 字符约 1 token，其余约 4 字符 1 token。"""
+    if not text:
+        return 0
+    cjk = sum(1 for ch in text if "\u4e00" <= ch <= "\u9fff")
+    other = len(text) - cjk
+    return cjk + other // 4 + 1
+
+
+def _cap(content: str) -> str:
+    """对极端超长的单条消息做兜底截断（保留开头）。"""
+    if len(content) > MAX_MSG_CHARS:
+        return content[:MAX_MSG_CHARS] + "..."
+    return content
 
 
 def load_history(conversation_id: str) -> list[AIMessage | HumanMessage]:
-    """从 DB 加载近期对话，超预算时自动摘要压缩。
-
-    策略：
-    1. 逐条截断 AI 长回复至 150 字
-    2. 总长在预算内 → 直接返回
-    3. 超出 → 保留最近 2 轮，更早的由 LLM 压缩为摘要
-    """
+    """加载对话历史，按 token 预算的滑动窗口返回最近的若干轮（时间正序）。"""
     if not conversation_id:
         return []
 
@@ -39,50 +47,37 @@ def load_history(conversation_id: str) -> list[AIMessage | HumanMessage]:
             db.query(ChatMessageModel)
             .filter(ChatMessageModel.conversation_id == conversation_id)
             .order_by(ChatMessageModel.created_at.desc())
-            .limit(10)
+            .limit(MAX_DB_MESSAGES)
             .all()
         )
-        if not rows:
-            return []
-        raw = [(r.role, r.content) for r in reversed(rows)]
+        # 最新在前
+        raw = [(r.role, r.content or "") for r in rows]
     finally:
         db.close()
 
-    return _build(raw)
-
-
-def _build(raw: list[tuple[str, str]], max_tokens: int = 1500) -> list[AIMessage | HumanMessage]:
-    """截断 + 摘要压缩。"""
-    truncated = _truncate_ai(raw)
-
-    char_budget = int(max_tokens / 1.5)
-    if sum(len(c) for _, c in truncated) <= char_budget:
-        return _to_messages(truncated)
-
-    keep = 4  # 保留最近 2 轮
-    old = truncated[:-keep] if len(truncated) > keep else []
-    recent = truncated[-keep:] if len(truncated) > keep else truncated
-
-    if not old:
-        return _to_messages(recent)
-
-    summary = _summarize(_to_text(old))
-    return [AIMessage(content=f"[历史摘要] {summary}")] + _to_messages(recent)
-
-
-def _truncate_ai(raw: list[tuple[str, str]]) -> list[tuple[str, str]]:
-    """截断AI回复超过150字的内容，减少上下文占用"""
-    result = []
+    # 从最新往旧累加，直到超出 token 预算
+    selected: list[tuple[str, str]] = []  # 仍是"最新在前"
+    total = 0
     for role, content in raw:
-        if role == "assistant" and len(content) > 150:
-            result.append((role, content[:150] + "..."))
-        else:
-            result.append((role, content))
-    return result
+        content = _cap(content)
+        tokens = _estimate_tokens(content)
+        if selected and total + tokens > MAX_CONTEXT_TOKENS:
+            break
+        selected.append((role, content))
+        total += tokens
+
+    # 转为时间正序
+    selected.reverse()
+
+    # 按"轮"对齐：窗口应从用户消息开始，丢掉开头悬空的助手消息
+    while selected and selected[0][0] != "user":
+        selected.pop(0)
+
+    return _to_messages(selected)
 
 
 def _to_messages(raw: list[tuple[str, str]]) -> list[AIMessage | HumanMessage]:
-    """将(角色, 内容)元组列表转换为LangChain消息对象列表"""
+    """将(角色, 内容)元组列表转换为 LangChain 消息对象列表。"""
     msgs: list[AIMessage | HumanMessage] = []
     for role, content in raw:
         if role == "user":
@@ -90,24 +85,3 @@ def _to_messages(raw: list[tuple[str, str]]) -> list[AIMessage | HumanMessage]:
         elif role == "assistant":
             msgs.append(AIMessage(content=content))
     return msgs
-
-
-def _to_text(raw: list[tuple[str, str]]) -> str:
-    """将(角色, 内容)元组列表转换为带角色前缀的纯文本字符串"""
-    return "\n".join(
-        f"{'用户' if role == 'user' else '助手'}: {content}"
-        for role, content in raw
-    )
-
-
-def _summarize(text: str) -> str:
-    """使用LLM将较早的对话压缩为简洁摘要，保留关键查询和价格信息"""
-    llm = _get_summary_llm()
-    resp = llm.invoke([
-        SystemMessage(
-            content="你是一个对话摘要助手。将以下对话压缩为简洁的摘要（100字以内），"
-            "保留关键信息：查询的产品、价格数据、用户意图。"
-        ),
-        HumanMessage(content=text),
-    ])
-    return resp.content

@@ -4,6 +4,7 @@ Meilisearch 搜索服务
 """
 import meilisearch
 from app.config import get_settings
+from app.core.aliases import meili_synonyms
 
 settings = get_settings()
 
@@ -61,13 +62,10 @@ def setup_index():
         "brand",
     ])
 
-    # 设置同义词（仅放真同义词，避免上下位词造成误命中）
-    # 例：把"食用油 ↔ 花生油"作为同义会让搜花生油也匹配菜籽油，是错的；
-    # 这种属于分类关系，应通过"keyword 命中分类名 → 限定子树"的方式承接。
-    index.update_synonyms({
-        "土豆": ["马铃薯", "洋芋"],
-        "番茄": ["西红柿"],
-    })
+    # 设置同义词（数据源见 app/core/aliases.py，与 price_service 的分类别名共用一份）
+    # 仅放真同义词，避免上下位词造成误命中；上下位关系应通过
+    # "keyword 命中分类名 → 限定子树"承接。
+    index.update_synonyms(meili_synonyms())
 
     # 设置 typo tolerance
     index.update_typo_tolerance({

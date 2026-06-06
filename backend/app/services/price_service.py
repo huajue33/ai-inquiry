@@ -6,6 +6,7 @@ import logging
 from app.models.product import Product
 from app.models.price import Price
 from app.services.category_cache import get_all_categories
+from app.core.aliases import alias_to_canonical
 
 logger = logging.getLogger(__name__)
 
@@ -76,11 +77,8 @@ def search_products(db: Session, keyword: str, category_ids: list[int] = None, l
 
 # 关键词到"规范分类名关键字"的别名表（用户常用别名 → 标准品类名）
 # value 会用 LIKE 去 categories.name 模糊匹配，所以填核心词即可。
-_CATEGORY_ALIASES: dict[str, str] = {
-    "马铃薯": "土豆",
-    "洋芋": "土豆",
-    "西红柿": "番茄",
-}
+# 数据源统一在 app/core/aliases.py（与 Meilisearch 同义词共用一份）。
+_CATEGORY_ALIASES: dict[str, str] = alias_to_canonical()
 
 
 def _resolve_keyword_to_category_subtree(db: Session, keyword: str) -> list[int] | None:
