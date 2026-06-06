@@ -1,15 +1,34 @@
-# Agent 优化建议
+# Agent 优化记录
 
-本文基于对当前 Agent 相关实现的梳理，给出可落地的优化方向。涉及代码：
+本文沉淀本轮对 AI 询价 Agent 的一系列优化：问题背景、根因、落地方案与验证情况，
+作为后续维护与回顾的依据。
 
-- `backend/app/services/agent.py` — LangGraph ReAct Agent 装配
-- `backend/app/services/ai_service.py` — 流式输出、思考模式
-- `backend/app/tools/price_tools.py` — 4 个价格查询工具
-- `backend/app/services/price_service.py` — 搜索 / 取价 / 排行的数据层
+**涉及代码**：
+
+- `backend/app/services/agent.py` — Agent 装配（`create_agent` + `ReasoningChatOpenAI`）
+- `backend/app/services/ai_service.py` — 统一流式、思考、决策日志、ID 校验
+- `backend/app/tools/price_tools.py` — 价格查询工具（5 个）
+- `backend/app/services/price_service.py` — 搜索 / 取价 / 排行 / 品类聚合 数据层
+- `backend/app/core/models.py` — 模型注册表与「自动」路由
+- `backend/app/core/aliases.py` — 别名/同义词单一数据源
 - `backend/app/core/prompts.py` — 系统提示词
-- `backend/app/services/history.py` — 历史加载与摘要压缩
+- `backend/app/services/history.py` — token 预算滑动窗口
 
-> 进度：**#1、#2、#3、#4 已完成**（见各条 ✅）。剩余 #5~#10 为后续可选优化。
+## 总览
+
+| # | 项 | 类型 | 状态 |
+|---|---|---|---|
+| 1 | Meilisearch 同义词单一数据源 | 准确性 | ✅ 已完成 |
+| 2 | `{#id=N}` 防幻觉链接校验 | 可靠性 | ✅ 已完成 |
+| 3 | token 预算滑动窗口（保留商品上下文） | 准确性 | ✅ 已完成 |
+| 4 | 思考模式合并为单次流式 | 延迟 | ✅ 已完成 |
+| 5 | 模型路由「自动」档 | 成本 | ✅ 已完成 |
+| 6 | 工具调用上限 + 递归上限 | 健壮性 | ✅ 已完成 |
+| 7 | LLM 瞬时失败重试 | 健壮性 | ✅ 已完成 |
+| 8 | 本地结构化决策日志 | 可观测性 | ✅ 已完成 |
+| 9 | 多品牌对比可靠性 | 准确性 | ✅ 主要场景已覆盖 |
+| 10 | ASR 自定义热词 | 体验 | ⬜ 待办（需运营配置） |
+| 附加 | 品类价格概览工具 `get_category_price_summary` | 准确性/成本 | ✅ 已完成 |
 
 ---
 
@@ -162,27 +181,28 @@ LangSmith 因价格数据外泄考量未采用（如需深度调试可临时用�
 ## 锦上添花
 
 ### 9. 多品牌对比的可靠性
-**现状**：靠提示词约束模型"挑不同品牌代表"，容易翻车（结果全是同品牌不同规格）。
+> ✅ **主要场景已覆盖**（通过 `get_category_price_summary` 的品牌分布）。
 
-**建议**：在服务端实现"按品牌去重取代表"，或新增 `compare_brands` 工具，
-把这件事从"求模型自觉"变成"代码保证"。
+**原问题**：靠提示词约束模型"挑不同品牌代表"，容易翻车（结果全是同品牌不同规格）。
 
-### 10. ASR 自定义热词
-**建议**：Paraformer 实时识别支持自定义热词词表，把生鲜专业品名注册进去，
-可明显提升专业词识别率。
+**现状**：新增的 `get_category_price_summary`（品类价格概览，数据层聚合）返回 `by_brand`——
+主流单位下各品牌的均价与数量。用户问"对比不同品牌X价格"时，模型直接用它得到按品牌的
+价格对比，无需再"从搜索结果里挑代表"，**把品牌对比从"求模型自觉"变成"数据保证"**。
 
----
+**残留（按需）**：若要"指定具体几款跨品牌精确对比明细"，仍走 search_products + 取价，
+此时可再补一个服务端"按品牌去重取代表"的工具。当前常见对比需求已满足。
 
-## 落地优先级建议
+### 10. ASR 自定义热词（待办）
+**目标**：把生鲜专业品名注册为 Paraformer 热词，提升语音输入的专业词识别率。
 
-| 优先级 | 项 | 类型 | 改动量 | 状态 |
-|---|---|---|---|---|
-| P0 | #2 防幻觉链接 | 可靠性 | 小 | ✅ 已完成 |
-| P0 | #1 Meilisearch 同义词 | 准确性 | 小~中 | ✅ 已完成 |
-| P1 | #4 思考模式重构 | 延迟 | 中 | ✅ 已完成 |
-| P1 | #3 保留商品上下文 | 准确性 | 中 | ✅ 已完成 |
-| P2 | #5 模型路由（自动档） | 成本 | 小~中 | ✅ 已完成 |
-| P2 | #6 工具调用上限 / 递归上限 | 健壮性 | 小 | ✅ 已完成 |
-| P2 | #7 LLM 重试 | 健壮性 | 小 | ✅ 已完成 |
-| P3 | #8 可观测性（本地日志） | 体验/质量 | 小 | ✅ 已完成 |
-| P3 | #9 品牌对比 / #10 ASR 热词 | 体验/质量 | 中 | ⬜ 待办 |
+**方案（paraformer-realtime-v2，对应 `vocabulary_id`）**：
+1. 从 DB 抽取热词：distinct 的 `base_name`/`brand`/品类名，去重、过滤（纯中文≤10 字），
+   控制在 500 个以内，按重要度给权重（[1,5]）。
+2. 一次性创建热词表 → 拿到 ID，存入配置（如 `DASHSCOPE_ASR_VOCABULARY_ID`）。
+   - v1 模型用 `AsrPhraseManager.create_phrases(...)` 得 `phrase_id`，识别时 `recognition.start(phrase_id=...)`；
+   - v2 模型（我们用的）用 vocabulary 机制得 `vocabulary_id`，识别时构造 `Recognition(..., vocabulary_id=...)`。
+3. `realtime_asr.py` 读配置，set 了就把 `vocabulary_id` 传给 `Recognition`。
+4. 产品库更新后定期 update 热词表（脚本或定时）。
+
+**说明**：步骤 1~2 是一次性运营操作 + 脚本；步骤 3 的接入是几行。v2 的 vocabulary 创建 API
+需按当前 SDK 版本核对后再落地。
