@@ -14,12 +14,24 @@ KNOWN_MODELS 只是给已知模型补充友好名称/描述/是否支持深度�
 from app.config import get_settings
 
 # id -> 展示元信息
+# supports_thinking 依据百炼「深度思考」官方文档（2026-06）：
+# Qwen3.5/3.6/3.7 的 plus/max/flash 系列支持思考；qwen-plus 支持；
+# qwen-max/qwen-turbo 为非思考模型。可按你实际开通情况调整。
 KNOWN_MODELS: dict[str, dict] = {
-    "qwen3.5-plus": {"name": "Qwen3.5 Plus", "description": "综合能力强，默认", "supports_thinking": True},
-    "qwen-plus":    {"name": "Qwen Plus",    "description": "均衡，性价比高",   "supports_thinking": True},
-    "qwen-max":     {"name": "Qwen Max",     "description": "复杂推理更强",     "supports_thinking": False},
-    "qwen-turbo":   {"name": "Qwen Turbo",   "description": "快速、低成本",     "supports_thinking": False},
-    "qwen-flash":   {"name": "Qwen Flash",   "description": "极速、超低成本",   "supports_thinking": False},
+    # ── Qwen3.7 系列 ──
+    "qwen3.7-max":         {"name": "Qwen3.7 Max",  "description": "旗舰，复杂推理最强",   "supports_thinking": True},
+    "qwen3.7-plus":        {"name": "Qwen3.7 Plus", "description": "综合能力强",          "supports_thinking": True},
+    # ── Qwen3.6 系列 ──
+    "qwen3.6-max-preview": {"name": "Qwen3.6 Max",  "description": "复杂推理",            "supports_thinking": True},
+    "qwen3.6-plus":        {"name": "Qwen3.6 Plus", "description": "综合能力强",          "supports_thinking": True},
+    # ── Qwen3.5 系列 ──
+    "qwen3.5-plus":        {"name": "Qwen3.5 Plus", "description": "综合能力强",          "supports_thinking": True},
+    "qwen3.5-flash":       {"name": "Qwen3.5 Flash","description": "快速、低成本",         "supports_thinking": True},
+    # ── 通用滚动别名（指向最新快照）──
+    "qwen-plus":           {"name": "Qwen Plus",    "description": "均衡，支持思考",       "supports_thinking": True},
+    "qwen-max":            {"name": "Qwen Max",     "description": "旗舰（不支持思考）",    "supports_thinking": False},
+    "qwen-flash":          {"name": "Qwen Flash",   "description": "极速、低成本",         "supports_thinking": True},
+    "qwen-turbo":          {"name": "Qwen Turbo",   "description": "快速、低成本",         "supports_thinking": False},
 }
 
 
