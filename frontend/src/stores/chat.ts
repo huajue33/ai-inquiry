@@ -8,6 +8,7 @@ import {
   saveMessage,
   type ConversationItem,
 } from "../api/conversation"
+import { getModels, type ModelOption } from "../api/chat"
 
 /**
  * 每个对话的独立状态
@@ -27,6 +28,18 @@ export const useChatStore = defineStore("chat", () => {
   // 全局设置
   const enableThinking = ref(false)
   const enableWebSearch = ref(false)
+
+  // 模型选择
+  const availableModels = ref<ModelOption[]>([])
+  const defaultModel = ref<string>("")
+  const selectedModel = ref<string>(localStorage.getItem("selected_model") || "")
+
+  // 当前选中模型是否支持深度思考
+  const currentModelSupportsThinking = computed(() => {
+    const m = availableModels.value.find((x) => x.id === selectedModel.value)
+    // 列表未加载时默认允许，避免初始误禁用
+    return m ? m.supports_thinking : true
+  })
 
   // 每个对话的独立状态 Map
   const conversationStates = reactive<Map<string, ConversationState>>(new Map())
@@ -61,6 +74,37 @@ export const useChatStore = defineStore("chat", () => {
       conversations.value = res.conversations
     } catch {
       // ignore
+    }
+  }
+
+  // 加载可选模型列表
+  async function loadModels() {
+    try {
+      const res = await getModels()
+      availableModels.value = res.models
+      defaultModel.value = res.default
+      // 已选模型不在列表中（或未选过）→ 回退默认
+      const valid = res.models.some((m) => m.id === selectedModel.value)
+      if (!valid) {
+        selectedModel.value = res.default
+        localStorage.setItem("selected_model", res.default)
+      }
+      // 当前模型不支持思考时，强制关闭深度思考开关
+      if (!currentModelSupportsThinking.value) {
+        enableThinking.value = false
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  // 切换模型
+  function setModel(id: string) {
+    selectedModel.value = id
+    localStorage.setItem("selected_model", id)
+    // 新模型不支持思考时，关闭深度思考
+    if (!currentModelSupportsThinking.value) {
+      enableThinking.value = false
     }
   }
 
@@ -203,8 +247,9 @@ export const useChatStore = defineStore("chat", () => {
     getState(convId).toolStatus = status
   }
 
-  /** 设置全局思考模式开关 */
+  /** 设置全局思考模式开关（模型不支持思考时忽略开启请求） */
   function setEnableThinking(val: boolean) {
+    if (val && !currentModelSupportsThinking.value) return
     enableThinking.value = val
   }
 
@@ -232,6 +277,10 @@ export const useChatStore = defineStore("chat", () => {
     toolStatus,
     enableThinking,
     enableWebSearch,
+    availableModels,
+    defaultModel,
+    selectedModel,
+    currentModelSupportsThinking,
     addMessage,
     updateLastMessage,
     appendToLastMessage,
@@ -240,6 +289,8 @@ export const useChatStore = defineStore("chat", () => {
     completeToolCall,
     persistMessage,
     loadConversations,
+    loadModels,
+    setModel,
     newConversation,
     switchConversation,
     removeConversation,

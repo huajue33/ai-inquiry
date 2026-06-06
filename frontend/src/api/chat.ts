@@ -1,11 +1,38 @@
+import request from "./request"
+
+export interface ModelOption {
+  id: string
+  name: string
+  description: string
+  supports_thinking: boolean
+}
+
+/** 获取可选模型列表及默认模型 */
+export function getModels(): Promise<{ models: ModelOption[]; default: string }> {
+  return request.get("/chat/models")
+}
+
+/** 上传音频转写为文字 */
+export async function transcribeAudio(blob: Blob, signal?: AbortSignal): Promise<string> {
+  const form = new FormData()
+  form.append("file", blob, "audio.wav")
+  const res = await request.post<{ text: string }, { text: string }>(
+    "/chat/transcribe",
+    form,
+    { signal }
+  )
+  return res.text || ""
+}
+
 /**
- * 流式发送消息（SSE），支持思考模式、联网搜索和中断
+ * 流式发送消息（SSE），支持思考模式、联网搜索、模型选择和中断
  */
 export async function sendMessageStream(
   message: string,
   conversationId: string | undefined,
   enableThinking: boolean,
   enableWebSearch: boolean,
+  model: string | undefined,
   callbacks: {
     onToken: (token: string) => void
     onThinkingToken?: (token: string) => void
@@ -30,6 +57,7 @@ export async function sendMessageStream(
         conversation_id: conversationId,
         enable_thinking: enableThinking,
         enable_web_search: enableWebSearch,
+        model,
       }),
       signal: abortSignal,
     })

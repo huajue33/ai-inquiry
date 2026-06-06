@@ -7,3 +7,4 @@ class ChatRequest(BaseModel):
     conversation_id: Optional[str] = None
     enable_thinking: bool = False
     enable_web_search: bool = False
+    model: Optional[str] = None

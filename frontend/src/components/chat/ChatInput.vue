@@ -2,7 +2,7 @@
   <div class="chat-input-wrapper">
     <!-- 录音浮层 -->
     <transition name="voice-fade">
-      <div v-if="pressing" class="voice-mask">
+      <div v-if="pressing || transcribing" class="voice-mask">
         <div class="voice-card" :class="{ canceling }">
           <div class="voice-wave">
             <span class="bar"></span>
@@ -12,15 +12,15 @@
             <span class="bar"></span>
           </div>
           <div class="voice-text">
-            <template v-if="speech.finalText.value || speech.interimText.value">
-              {{ speech.finalText.value }}<span class="interim">{{ speech.interimText.value }}</span>
-            </template>
-            <template v-else>
-              <span class="placeholder">正在聆听...</span>
-            </template>
+            <span v-if="transcribing" class="placeholder">识别中...</span>
+            <template v-else-if="liveText">{{ liveText }}</template>
+            <span v-else class="placeholder">正在聆听...</span>
           </div>
           <div class="voice-tip">
-            <template v-if="canceling">
+            <template v-if="transcribing">
+              <span>请稍候</span>
+            </template>
+            <template v-else-if="canceling">
               <span class="cancel-hint">松开手指 取消发送</span>
             </template>
             <template v-else>
@@ -74,6 +74,35 @@
         <span v-else>松开 发送</span>
       </div>
 
+      <!-- 模型选择 -->
+      <el-dropdown
+        trigger="click"
+        placement="top-start"
+        class="model-dropdown"
+        :disabled="chatStore.loading"
+        @command="chatStore.setModel"
+      >
+        <span class="model-trigger" :class="{ disabled: chatStore.loading }">
+          <span class="model-name">{{ currentModelName }}</span>
+          <el-icon :size="10"><ArrowDown /></el-icon>
+        </span>
+        <template #dropdown>
+          <el-dropdown-menu>
+            <el-dropdown-item
+              v-for="m in chatStore.availableModels"
+              :key="m.id"
+              :command="m.id"
+            >
+              <div class="model-item" :class="{ active: m.id === chatStore.selectedModel }">
+                <span class="model-item-name">{{ m.name }}</span>
+                <span v-if="m.description" class="model-item-desc">{{ m.description }}</span>
+                <el-icon v-if="m.id === chatStore.selectedModel" :size="13" class="model-check"><Select /></el-icon>
+              </div>
+            </el-dropdown-item>
+          </el-dropdown-menu>
+        </template>
+      </el-dropdown>
+
       <el-tooltip :content="chatStore.enableWebSearch ? '联网搜索已开启' : '开启联网搜索'" placement="top">
         <el-button
           :type="chatStore.enableWebSearch ? 'primary' : 'default'"
@@ -86,16 +115,23 @@
         </el-button>
       </el-tooltip>
 
-      <el-tooltip :content="chatStore.enableThinking ? '深度思考已开启' : '开启深度思考'" placement="top">
-        <el-button
-          :type="chatStore.enableThinking ? 'warning' : 'default'"
-          size="small"
-          circle
-          class="action-btn"
-          @click="chatStore.setEnableThinking(!chatStore.enableThinking)"
-        >
-          <el-icon :size="14"><MagicStick /></el-icon>
-        </el-button>
+      <el-tooltip
+        :content="chatStore.currentModelSupportsThinking ? (chatStore.enableThinking ? '深度思考已开启' : '开启深度思考') : '当前模型不支持深度思考'"
+        placement="top"
+      >
+        <!-- 用 span 包裹，禁用状态下 tooltip 仍可正常悬浮 -->
+        <span class="thinking-wrap">
+          <el-button
+            :type="chatStore.enableThinking ? 'warning' : 'default'"
+            size="small"
+            circle
+            class="action-btn"
+            :disabled="!chatStore.currentModelSupportsThinking"
+            @click="chatStore.setEnableThinking(!chatStore.enableThinking)"
+          >
+            <el-icon :size="14"><MagicStick /></el-icon>
+          </el-button>
+        </span>
       </el-tooltip>
 
       <!-- 发送/停止按钮（语音模式下隐藏发送，松开自动发） -->
@@ -122,28 +158,39 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch, toRefs } from "vue"
-import { Connection, Promotion, MagicStick, VideoPause, Microphone, EditPen } from "@element-plus/icons-vue"
+import { ref, computed } from "vue"
+import { Connection, Promotion, MagicStick, VideoPause, Microphone, EditPen, ArrowDown, Select } from "@element-plus/icons-vue"
 import { ElMessage } from "element-plus"
 import { useChatStore } from "../../stores/chat"
-import { sendMessageStream } from "../../api/chat"
+import { sendMessageStream, transcribeAudio } from "../../api/chat"
 import { uuid } from "../../utils/uuid"
-import { useSpeechRecognition } from "../../composables/useSpeechRecognition"
+import { useAudioRecorder } from "../../composables/useAudioRecorder"
+import { useRealtimeAsr } from "../../composables/useRealtimeAsr"
 import type { ChatMessage } from "../../types/message"
 
 const chatStore = useChatStore()
 const inputText = ref("")
 let abortController: AbortController | null = null
 
+// 当前选中模型的展示名
+const currentModelName = computed(() => {
+  const m = chatStore.availableModels.find((x) => x.id === chatStore.selectedModel)
+  return m?.name || chatStore.selectedModel || "模型"
+})
+
 // ===== 输入模式：'text' 文本 / 'voice' 语音 =====
 const voiceMode = ref(false)
 
-// ===== 语音输入（按住说话，松开发送） =====
-const speechApi = useSpeechRecognition()
-const speech = toRefs(speechApi)
+// ===== 语音输入 =====
+// 优先实时识别（边说边出字）；连接失败时回退到"录完整段再识别"。
+const rtAsr = useRealtimeAsr()
+const recorder = useAudioRecorder()
+const liveText = rtAsr.liveText      // 实时识别的累计文本（绑到录音浮层）
 
-const pressing = ref(false)       // 是否正在按住说话
+const pressing = ref(false)       // 是否正在按住录音
 const canceling = ref(false)      // 上滑超阈值，松手将取消
+const transcribing = ref(false)   // 一次性回退模式下，松开后等待识别
+const usingRealtime = ref(false)  // 本次录音是否走实时通道
 
 const CANCEL_THRESHOLD = 60       // 上滑多少 px 视为取消
 const MIN_PRESS_MS = 400          // 按住时长不足判定为误触
@@ -154,31 +201,17 @@ let textBackup = ""
 
 function toggleVoiceMode() {
   if (chatStore.loading) return
-  if (!voiceMode.value && !speechApi.isSupported.value) {
-    ElMessage.warning("当前浏览器不支持语音识别，建议使用 Edge 或 Chrome")
+  if (!voiceMode.value && !recorder.isSupported.value) {
+    ElMessage.warning("当前浏览器不支持录音")
     return
   }
   voiceMode.value = !voiceMode.value
 }
 
-// 录音中实时把识别结果写到输入框
-watch(
-  () => speechApi.finalText.value + speechApi.interimText.value,
-  (composed) => {
-    if (pressing.value) {
-      inputText.value = composed
-    }
-  }
-)
-
-watch(speechApi.errorMsg, (msg) => {
-  if (msg) ElMessage.warning(msg)
-})
-
-function onMicPointerDown(e: PointerEvent) {
-  if (chatStore.loading) return
-  if (!speechApi.isSupported.value) {
-    ElMessage.warning("当前浏览器不支持语音识别，建议使用 Edge 或 Chrome")
+async function onMicPointerDown(e: PointerEvent) {
+  if (chatStore.loading || transcribing.value) return
+  if (!recorder.isSupported.value && !rtAsr.isSupported.value) {
+    ElMessage.warning("当前浏览器不支持录音")
     return
   }
   // 鼠标右键忽略
@@ -188,12 +221,26 @@ function onMicPointerDown(e: PointerEvent) {
   ;(e.currentTarget as HTMLElement)?.setPointerCapture?.(e.pointerId)
 
   textBackup = inputText.value
-  inputText.value = ""
   pressStartY = e.clientY
   pressStartTime = Date.now()
-  pressing.value = true
   canceling.value = false
-  speechApi.start()
+
+  // 优先尝试实时识别
+  if (rtAsr.isSupported.value && (await rtAsr.start())) {
+    usingRealtime.value = true
+    pressing.value = true
+    return
+  }
+  // 回退：一次性录音
+  usingRealtime.value = false
+  const ok = await recorder.start()
+  if (!ok) {
+    if (recorder.errorMsg.value || rtAsr.errorMsg.value) {
+      ElMessage.warning(recorder.errorMsg.value || rtAsr.errorMsg.value)
+    }
+    return
+  }
+  pressing.value = true
 }
 
 function onMicPointerMove(e: PointerEvent) {
@@ -213,42 +260,68 @@ async function onMicPointerUp(e: PointerEvent) {
   canceling.value = false
 
   if (wasCanceling) {
-    speechApi.abort()
-    inputText.value = textBackup
+    usingRealtime.value ? rtAsr.abort() : recorder.abort()
     return
   }
 
   if (pressDuration < MIN_PRESS_MS) {
-    speechApi.abort()
-    inputText.value = textBackup
+    usingRealtime.value ? rtAsr.abort() : recorder.abort()
     ElMessage.info("按住按钮说话")
     return
   }
 
-  // 正常松开：停止识别 → 等最终 transcript → 自动发送
-  speechApi.stop()
-  // 给浏览器 ~400ms 把最后一段 interim 转成 final 并触发 onresult
-  await new Promise((r) => setTimeout(r, 400))
-
-  const finalText = (speechApi.finalText.value || speechApi.interimText.value).trim()
-  if (!finalText) {
-    inputText.value = textBackup
-    ElMessage.info("没有识别到语音")
+  if (usingRealtime.value) {
+    // 实时模式：停止并取最终文本
+    let text = ""
+    try {
+      text = (await rtAsr.stop()).trim()
+    } catch {
+      text = ""
+    }
+    if (rtAsr.errorMsg.value) {
+      ElMessage.warning(rtAsr.errorMsg.value)
+    }
+    if (!text) {
+      ElMessage.info("没有识别到语音")
+      return
+    }
+    inputText.value = textBackup ? `${textBackup} ${text}` : text
+    handleSend()
     return
   }
 
-  inputText.value = textBackup
-    ? `${textBackup} ${finalText}`
-    : finalText
-  handleSend()
+  // 回退模式：录完整段上传识别
+  let blob: Blob | null = null
+  try {
+    blob = await recorder.stop()
+  } catch {
+    blob = null
+  }
+  if (!blob) {
+    ElMessage.info("没有录到声音")
+    return
+  }
+  transcribing.value = true
+  try {
+    const text = (await transcribeAudio(blob)).trim()
+    if (!text) {
+      ElMessage.info("没有识别到语音")
+      return
+    }
+    inputText.value = textBackup ? `${textBackup} ${text}` : text
+    handleSend()
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.detail || "语音识别失败，请重试")
+  } finally {
+    transcribing.value = false
+  }
 }
 
 function onMicPointerCancel() {
   if (!pressing.value) return
   pressing.value = false
   canceling.value = false
-  speechApi.abort()
-  inputText.value = textBackup
+  usingRealtime.value ? rtAsr.abort() : recorder.abort()
 }
 
 const TOOL_NAMES: Record<string, string> = {
@@ -280,13 +353,6 @@ function handleStop() {
 }
 
 async function handleSend() {
-  // 发送前若还在录音，先停掉，确保最后一段 interim 也变成 final
-  if (speechApi.isRecording.value) {
-    speechApi.stop()
-    // 给浏览器一点时间把最终 transcript 触发出来
-    await new Promise((r) => setTimeout(r, 100))
-  }
-
   const text = inputText.value.trim()
   if (!text || chatStore.loading) return
 
@@ -331,6 +397,7 @@ async function handleSend() {
       targetConvId,
       chatStore.enableThinking,
       chatStore.enableWebSearch,
+      chatStore.selectedModel,
       {
         onToken(token: string) {
           chatStore.setToolStatus("", targetConvId)
@@ -419,6 +486,77 @@ defineExpose({ sendFromOutside })
   flex-shrink: 0;
 }
 
+.thinking-wrap {
+  display: inline-flex;
+  flex-shrink: 0;
+}
+
+/* 模型选择器 */
+.model-dropdown {
+  flex-shrink: 0;
+}
+
+.model-trigger {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  max-width: 120px;
+  padding: 4px 8px;
+  border-radius: 14px;
+  font-size: 12px;
+  color: #606266;
+  background: #f5f7fa;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.2s, color 0.2s;
+}
+
+.model-trigger:hover {
+  background: #ecf5ff;
+  color: #409eff;
+}
+
+.model-trigger.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.model-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.model-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 200px;
+  padding: 2px 0;
+}
+
+.model-item-name {
+  font-size: 13px;
+  color: #303133;
+  white-space: nowrap;
+}
+
+.model-item.active .model-item-name {
+  color: #409eff;
+  font-weight: 600;
+}
+
+.model-check {
+  color: #409eff;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.model-item-desc {
+  font-size: 11px;
+  color: #a8abb2;
+  white-space: nowrap;
+}
+
 .mode-btn {
   margin-right: 2px;
 }
@@ -456,7 +594,7 @@ defineExpose({ sendFromOutside })
 }
 
 .input-box.voice-mode {
-  padding: 6px 4px 6px 6px;
+  padding: 4px 4px 4px 6px;
 }
 
 /* ===== 录音浮层 ===== */
@@ -527,10 +665,6 @@ defineExpose({ sendFromOutside })
   margin-bottom: 12px;
 }
 
-.voice-text .interim {
-  color: #909399;
-}
-
 .voice-text .placeholder {
   color: #c0c4cc;
 }
@@ -585,5 +719,12 @@ defineExpose({ sendFromOutside })
   width: 30px;
   height: 30px;
   flex-shrink: 0;
+}
+
+@media (max-width: 768px) {
+  .model-trigger {
+    max-width: 84px;
+    padding: 4px 6px;
+  }
 }
 </style>

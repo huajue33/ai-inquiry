@@ -139,6 +139,19 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
     }
 
+    # WebSocket：实时语音识别（必须放在 /api/ 之前，且 Connection 用 upgrade）
+    location /api/chat/asr-stream {
+        proxy_pass http://127.0.0.1:8000/api/chat/asr-stream;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_read_timeout 600s;
+        proxy_send_timeout 600s;
+    }
+
     # 反代到后端容器（SSE）
     location /api/ {
         proxy_pass http://127.0.0.1:8000/api/;

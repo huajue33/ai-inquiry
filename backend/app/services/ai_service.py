@@ -10,10 +10,11 @@ from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, Tool
 from app.config import get_settings
 from app.core.prompts import SYSTEM_PROMPT
 from app.core.permissions import current_user_var
+from app.core.models import resolve_model, model_supports_thinking
 from app.database import SessionLocal
 from app.models.product import Category
 from app.models.permission import UserCategoryPermission
-from app.services.agent import agent, agent_web, openai_client
+from app.services.agent import get_agents, openai_client
 from app.services.history import load_history
 from app.services.persistence import save_assistant_message
 
@@ -66,12 +67,15 @@ def _build_runtime_context() -> str:
 
 # ── 流式入口 ────────────────────────────────────────────
 
-async def chat_stream(message: str, conversation_id: str, enable_thinking: bool = False, enable_web_search: bool = False) -> AsyncGenerator[str, None]:
+async def chat_stream(message: str, conversation_id: str, enable_thinking: bool = False, enable_web_search: bool = False, model: str | None = None) -> AsyncGenerator[str, None]:
     """根据模式分派到常规流式或思考流式，以SSE格式输出AI回复。
 
     无论正常结束还是客户端中途断开（关闭页面/点停止），都会在 finally 中由服务端
     兜底持久化助手消息，内容/思考/usage/duration 以服务端为准。
     """
+    # 模型收敛为白名单内的合法值（非法/缺省回退默认模型）
+    model = resolve_model(model)
+
     # 累加器：内层函数边产出边写入，供流结束后持久化
     acc = {
         "content": "",
@@ -84,10 +88,10 @@ async def chat_stream(message: str, conversation_id: str, enable_thinking: bool 
 
     try:
         if enable_thinking:
-            async for chunk in _stream_with_thinking(message, conversation_id, enable_web_search, acc):
+            async for chunk in _stream_with_thinking(message, conversation_id, enable_web_search, acc, model):
                 yield chunk
         else:
-            async for chunk in _stream_normal(message, conversation_id, enable_web_search, acc):
+            async for chunk in _stream_normal(message, conversation_id, enable_web_search, acc, model):
                 yield chunk
 
     except Exception as e:
@@ -113,12 +117,13 @@ async def chat_stream(message: str, conversation_id: str, enable_thinking: bool 
                 logger.warning(f"流结束时持久化助手消息失败: {e}")
 
 
-async def _stream_normal(message: str, conversation_id: str, enable_web_search: bool = False, acc: dict = None) -> AsyncGenerator[str, None]:
+async def _stream_normal(message: str, conversation_id: str, enable_web_search: bool = False, acc: dict = None, model: str | None = None) -> AsyncGenerator[str, None]:
     """普通流式输出：LangGraph Agent + 工具调用"""
     if acc is None:
         acc = {}
     usage_data = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
+    agent, agent_web = get_agents(resolve_model(model))
     _agent = agent_web if enable_web_search else agent
     # 这两个调用内部是同步 DB 查询（load_history 还可能触发同步的摘要 LLM 调用），
     # 放进线程池执行，避免阻塞事件循环影响并发。
@@ -196,12 +201,14 @@ async def _stream_normal(message: str, conversation_id: str, enable_web_search: 
     yield f"data: {json.dumps(done_data, ensure_ascii=False)}\n\n"
 
 
-async def _stream_with_thinking(message: str, conversation_id: str, enable_web_search: bool = False, acc: dict = None) -> AsyncGenerator[str, None]:
+async def _stream_with_thinking(message: str, conversation_id: str, enable_web_search: bool = False, acc: dict = None, model: str | None = None) -> AsyncGenerator[str, None]:
     """思考模式：Agent 收集工具数据 → 思考 LLM 深度分析"""
     if acc is None:
         acc = {}
+    model = resolve_model(model)
     yield f"data: {json.dumps({'event': 'tool_start', 'data': '分析问题'}, ensure_ascii=False)}\n\n"
 
+    agent, agent_web = get_agents(model)
     _agent = agent_web if enable_web_search else agent
     # 同上：同步 DB / 摘要调用放线程池，避免阻塞事件循环。
     history = await run_in_threadpool(load_history, conversation_id)
@@ -239,9 +246,9 @@ async def _stream_with_thinking(message: str, conversation_id: str, enable_web_s
 如果数据显示无权访问，请直接告知用户没有该分类的查询权限。"""
 
     completion = await openai_client.chat.completions.create(
-        model=settings.dashscope_model,
+        model=model,
         messages=[{"role": "user", "content": thinking_prompt}],
-        extra_body={"enable_thinking": True},
+        extra_body={"enable_thinking": model_supports_thinking(model)},
         stream=True,
         stream_options={"include_usage": True},
     )

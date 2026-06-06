@@ -190,6 +190,7 @@ const currentConversationTitle = computed(() => {
 
 onMounted(() => {
   chatStore.loadConversations()
+  chatStore.loadModels()
 })
 
 function handleClear() {

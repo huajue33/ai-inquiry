@@ -47,7 +47,7 @@ frontend/
 │   │   ├── ChatInput.vue     # 输入框（含语音识别、思考模式开关）
 │   │   └── MessageList.vue   # 消息列表（Markdown + 图表 + 产品链接）
 │   ├── composables/
-│   │   └── useSpeechRecognition.ts  # 语音识别封装
+│   │   └── useAudioRecorder.ts  # 录音（WAV）封装，配合后端 ASR
 │   ├── stores/
 │   │   └── chat.ts           # 多对话并行状态管理
 │   ├── views/
