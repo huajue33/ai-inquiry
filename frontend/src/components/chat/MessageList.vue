@@ -426,13 +426,8 @@ watch(
     const last = msgs[msgs.length - 1]
     return last.thinking || ""
   },
-  (newVal, oldVal) => {
-    if (newVal && !oldVal) {
-      const msgs = chatStore.messages
-      if (msgs.length > 0) {
-        thinkingExpanded[msgs[msgs.length - 1].id] = true
-      }
-    }
+  () => {
+    // 思考内容默认折叠：不自动展开，用户可点"展开"查看。仅保持滚动跟随。
     scrollToBottom()
   }
 )
