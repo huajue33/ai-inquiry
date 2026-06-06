@@ -49,7 +49,7 @@
         <div class="history-label">最近记录</div>
         <div class="history-list">
           <div
-            v-for="conv in chatStore.conversations"
+            v-for="conv in visibleConversations"
             :key="conv.id"
             :class="['history-item', { active: conv.id === chatStore.conversationId }]"
             @click="handleSwitchConversation(conv.id)"
@@ -64,6 +64,13 @@
             >
               <el-icon :size="12"><Delete /></el-icon>
             </el-button>
+          </div>
+          <div
+            v-if="chatStore.conversations.length > visibleCount"
+            class="history-more"
+            @click="visibleCount += 10"
+          >
+            加载更多
           </div>
           <div v-if="!chatStore.conversations.length" class="history-empty">
             暂无对话记录
@@ -163,6 +170,12 @@ const router = useRouter()
 const chatStore = useChatStore()
 const chatInputRef = ref()
 const sidebarCollapsed = ref(false)
+
+// 侧栏最近记录：默认展示 10 条，点击加载更多每次 +10
+const visibleCount = ref(10)
+const visibleConversations = computed(() =>
+  chatStore.conversations.slice(0, visibleCount.value)
+)
 
 // 移动端断点 + 抽屉状态
 const isMobile = ref(window.innerWidth <= 768)
@@ -435,6 +448,20 @@ function handleQuickQuestion(q: string) {
   padding: 20px 0;
 }
 
+.history-more {
+  font-size: 12px;
+  color: #909399;
+  text-align: center;
+  padding: 10px 0;
+  cursor: pointer;
+  user-select: none;
+  transition: color 0.2s;
+}
+
+.history-more:hover {
+  color: #409eff;
+}
+
 /* ===== Main Area ===== */
 .main-area {
   flex: 1;
@@ -511,7 +538,7 @@ function handleQuickQuestion(q: string) {
 }
 
 .chat-footer {
-  padding: 12px 12px 16px;
+  padding: 12px 12px 5px;
   background: #fff;
   border-top: 1px solid #f0f0f0;
 }
