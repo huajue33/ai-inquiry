@@ -3,6 +3,7 @@
 # AI 询价助手 一键部署（本地构建 + 镜像导出 + rsync 传输 + 远程 load）
 # 适用于无法访问 Docker Hub 的国内服务器
 # 用法: bash deploy.sh
+# 说明：Meilisearch 第三方镜像也在本地拉好随包传输，服务器无需联网拉镜像
 # ============================================================
 set -e
 
@@ -25,6 +26,8 @@ source <(sed 's/\r$//' .deploy.env)
 SERVER_PORT="${SERVER_PORT:-22}"
 BACKEND_IMAGE="ai-inquiry-backend:latest"
 FRONTEND_IMAGE="ai-inquiry-frontend:latest"
+# 第三方镜像（不构建，本地拉好后随包传输）
+MEILI_IMAGE="getmeili/meilisearch:v1.11"
 SSH_OPT="-p ${SERVER_PORT}"
 RSYNC_SSH="ssh -p ${SERVER_PORT}"
 
@@ -34,27 +37,30 @@ docker build -t "$BACKEND_IMAGE" ./backend || { echo "后端构建失败！"; ex
 echo "      ✓ 后端构建完成"
 echo ""
 
-echo "[2/5] 构建前端镜像..."
+echo "[2/5] 构建前端镜像 + 准备 Meilisearch 镜像..."
 docker build -t "$FRONTEND_IMAGE" ./frontend || { echo "前端构建失败！"; exit 1; }
-echo "      ✓ 前端构建完成"
+# 本地没有 meili 镜像时才拉（拉一次即可，之后走本地缓存）
+docker image inspect "$MEILI_IMAGE" >/dev/null 2>&1 || docker pull "$MEILI_IMAGE" || { echo "Meilisearch 拉取失败（检查本地 Docker 加速器）！"; exit 1; }
+echo "      ✓ 前端构建完成，Meilisearch 就绪"
 echo ""
 
 # ===== 导出 =====
 echo "[3/5] 导出镜像..."
 docker save "$BACKEND_IMAGE" > ai-inquiry-backend.tar
 docker save "$FRONTEND_IMAGE" > ai-inquiry-frontend.tar
+docker save "$MEILI_IMAGE" > ai-inquiry-meili.tar
 echo "      ✓ 导出完成"
 echo ""
 
-# ===== 传输（rsync 增量 + 压缩传输）=====
+# ===== 传输（rsync 增量 + 压缩传输；meili 不变时 rsync 会自动跳过）=====
 echo "[4/5] 增量传输到服务器..."
 rsync -az --partial --progress -e "$RSYNC_SSH" \
-  ai-inquiry-backend.tar ai-inquiry-frontend.tar \
+  ai-inquiry-backend.tar ai-inquiry-frontend.tar ai-inquiry-meili.tar \
   "${SERVER_USER}@${SERVER_IP}:${SERVER_DIR}/" || { echo "传输失败！"; exit 1; }
 echo "      ✓ 传输完成"
 echo ""
 
-# ===== 远程部署（单个 compose 栈：meili + backend + frontend）=====
+# ===== 远程部署（全部镜像本地加载，服务器不联网拉镜像）=====
 echo "[5/5] 远程部署..."
 ssh ${SSH_OPT} "${SERVER_USER}@${SERVER_IP}" "
   set -e
@@ -62,6 +68,7 @@ ssh ${SSH_OPT} "${SERVER_USER}@${SERVER_IP}" "
   git pull
   docker load < ai-inquiry-backend.tar
   docker load < ai-inquiry-frontend.tar
+  docker load < ai-inquiry-meili.tar
   echo '=== 启动全部服务 ==='
   docker compose up -d
   echo '=== 清理无用镜像 ==='
@@ -71,7 +78,7 @@ ssh ${SSH_OPT} "${SERVER_USER}@${SERVER_IP}" "
 echo ""
 
 # ===== 清理本地（服务器上的 .tar 保留，作为下次 rsync 增量比对的基准）=====
-rm -f ai-inquiry-backend.tar ai-inquiry-frontend.tar
+rm -f ai-inquiry-backend.tar ai-inquiry-frontend.tar ai-inquiry-meili.tar
 
 echo "========================================"
 echo "  全部完成！"

@@ -60,8 +60,8 @@ services:
       meilisearch:
         condition: service_healthy
     ports:
-      # 仅本机调试用（前端走 docker 网络访问，不依赖此端口）
-      - "127.0.0.1:${BACKEND_PORT:-8090}:8000"
+      # 对外发布（服务器防火墙/安全组负责拦截公网访问）
+      - "${BACKEND_PORT:-8090}:8000"
     networks:
       - quotation-net
 

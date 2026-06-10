@@ -103,7 +103,7 @@ vim /www/wwwroot/ai-inquiry/.env
 | `MEILI_MASTER_KEY` | Meilisearch 密钥（≥16 字符） |
 | `JWT_SECRET` | JWT 签名密钥 |
 
-**前端**：无需环境变量。后端地址（`http://host.docker.internal:8090`）写死在 `frontend/nginx.conf`，对外端口（3010）写死在 `deploy.sh` 的 `docker run` 中。
+**前端**：无需环境变量。后端地址（docker 网络服务名 `http://backend:8000`）写死在 `frontend/nginx.conf`，对外端口（3010）由 `docker-compose.yml` 的 `WEB_PORT` 控制（默认 3010）。
 
 ---
 
