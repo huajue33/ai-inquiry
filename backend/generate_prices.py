@@ -59,6 +59,27 @@ def get_max_date(cursor):
     return row[0] if row and row[0] else None
 
 
+def get_valid_product_ids(cursor) -> set:
+    """products 表中真实存在的产品 ID（用于过滤孤儿价格，避免外键冲突）"""
+    cursor.execute("SELECT product_id FROM products")
+    return {row[0] for row in cursor.fetchall()}
+
+
+def delete_orphan_prices(cursor):
+    """删除 prices 中 product_id 在 products 表已不存在的孤儿记录"""
+    cursor.execute(
+        "DELETE FROM prices "
+        "WHERE product_id NOT IN (SELECT product_id FROM products)"
+    )
+    deleted = cursor.rowcount
+    conn.commit()
+    if deleted:
+        print(f"清理孤儿价格：删除 {deleted} 条（对应产品已不在 products 表）")
+    else:
+        print("无孤儿价格")
+    return deleted
+
+
 def get_latest_prices(cursor):
     """获取每个产品最新一天的价格作为基准"""
     cursor.execute("""
@@ -160,6 +181,10 @@ def main():
 
     print(f"当前日期：{today}，数据库最新日期：{max_date}")
 
+    # 0. 先清理孤儿价格（产品已从 products 表删除，但价格残留）
+    print("\n清理孤儿价格...")
+    delete_orphan_prices(cursor)
+
     # 1. 增量生成：从最新日期次日到今天
     start_date = max_date + timedelta(days=1)
     if start_date > today:
@@ -167,8 +192,15 @@ def main():
     else:
         print("\n获取基准价格...")
         current_prices = get_latest_prices(cursor)
-        product_ids = list(current_prices.keys())
-        print(f"共 {len(current_prices)} 个产品有基准价格")
+        # 过滤掉 products 表中已不存在的产品（孤儿价格），避免外键冲突
+        valid_ids = get_valid_product_ids(cursor)
+        product_ids = [pid for pid in current_prices if pid in valid_ids]
+        skipped = len(current_prices) - len(product_ids)
+        msg = f"共 {len(current_prices)} 个产品有基准价格"
+        if skipped:
+            msg += f"，其中 {skipped} 个在 products 表中不存在已跳过"
+        msg += f"，实际生成 {len(product_ids)} 个产品"
+        print(msg)
         days = generate_range(cursor, current_prices, product_ids, start_date, today)
         print(f"\n生成完成：{days} 天 × {len(product_ids)} 产品 ≈ {days * len(product_ids)} 条记录")
 
