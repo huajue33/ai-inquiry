@@ -8,7 +8,7 @@
 
 策略（沿用原逻辑）：
 - 以每个产品最新一天的价格为基准
-- 每天部分产品价格变动，变动幅度 ±1%~6%
+- 每天 30%~60% 的产品价格变动，变动幅度 ±3%~12%
 - 其余产品价格保持不变（向后填充）
 
 用法：
@@ -103,8 +103,8 @@ def get_latest_prices(cursor):
 
 
 def generate_new_price(current_price: float) -> float:
-    """生成新价格，变动幅度 ±1%~6%"""
-    change_pct = random.uniform(0.01, 0.06)
+    """生成新价格，变动幅度 ±3%~12%"""
+    change_pct = random.uniform(0.03, 0.12)
     direction = random.choice([-1, 1])
     new_price = current_price * (1 + direction * change_pct)
     new_price = max(0.1, new_price)  # 确保价格不低于 0.1
@@ -120,8 +120,8 @@ def generate_range(cursor, current_prices, product_ids, start_date, end_date):
     day_count = 0
     while current_date <= end_date:
         day_count += 1
-        # 每天部分产品价格变动
-        change_ratio = random.uniform(0.2, 0.5)
+        # 每天 30%~60% 的产品价格变动
+        change_ratio = random.uniform(0.3, 0.6)
         num_changes = int(len(product_ids) * change_ratio)
         changing_products = set(random.sample(product_ids, num_changes))
 
