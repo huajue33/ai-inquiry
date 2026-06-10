@@ -29,7 +29,7 @@ npm run build            # 生产构建 → dist/
 
 ```bash
 # 项目根目录
-bash scripts/build-push.sh   # 构建并推送前后端镜像
+bash deploy.sh   # 构建 + 导出 + rsync 传输 + 远程部署
 ```
 
 服务器通过 `docker compose pull && docker compose up -d` 拉取运行。
@@ -61,8 +61,6 @@ frontend/
 │   │       └── UsersPage.vue         # 用户管理
 │   ├── router/index.ts       # 路由（含权限守卫）
 │   └── types/message.ts      # 类型定义
-├── nginx.conf.template        # Nginx 配置模板
-├── Dockerfile                 # 多阶段构建
-├── docker-compose.yml         # 前端栈编排
-└── .env                       # 环境变量
+├── nginx.conf                 # Nginx 配置（静态托管 + /api 反代到 backend:8000）
+└── Dockerfile                 # 多阶段构建（产物由 Nginx 托管）
 ```

@@ -4,7 +4,7 @@
 
 ## 在线体验
 
-🔗 **体验地址**：[http://ai-inquiry.huahuaresume.online/](http://ai-inquiry.huahuaresume.online/)
+🔗 **体验地址**：[http://ai-inquiry.huahub.com.cn/](http://ai-inquiry.huahub.com.cn/)
 
 | 账号 | 姓名 | 角色 | 密码 |
 |------|------|------|------|
@@ -101,11 +101,9 @@
 │   │   │   └── admin/          # 管理后台子页面
 │   │   └── router/             # 路由（含权限守卫）
 │   └── package.json
-├── docker-compose.yml          # 后端栈（Meilisearch + Backend）
-├── scripts/
-│   └── build-push.sh           # 本地构建 + 推送镜像到 Docker Hub
-├── .github/workflows/
-│   └── deploy.yml              # GitHub Actions 自动部署
+├── docker-compose.yml          # 全栈编排（Meilisearch + Backend + Frontend）
+├── deploy.sh                   # 本地构建 + 导出镜像 + rsync 传输 + 远程部署
+├── .deploy.env.example         # 部署配置模板（服务器 IP / 用户 / 目录）
 ├── DEPLOY.md                   # 详细部署文档
 └── README.md
 ```
@@ -213,31 +211,31 @@ npm run dev
 
 ```
 用户 → 宝塔 Nginx (:80, SSL)
-  ├── /     → 127.0.0.1:8080  (前端 Docker 容器)
-  └── /api/ → 127.0.0.1:8000  (后端 Docker 容器)
+  ├── /     → 127.0.0.1:3010  (前端 Docker 容器)
+  └── /api/ → 127.0.0.1:8090  (后端 Docker 容器)
 ```
 
 ### 部署流程
 
 ```
-本地开发 → docker build → Docker Hub  ← 只推一次镜像
+本地开发 → docker build → docker save (.tar)
                 ↓
-         git push → GitHub Actions
+         rsync 传输到国内服务器（免 Docker Hub）
                 ↓
-         服务器 docker pull + restart  ← 秒级更新
+         ssh: docker load + docker compose up -d  ← 一键完成
 ```
 
-- **构建**：本地 `bash scripts/build-push.sh` 构建镜像并推送到 Docker Hub
-- **部署**：`git push` 触发 GitHub Actions，SSH 到服务器拉取镜像并重启
-- **前端**：容器内 Nginx 反代 `/api/` 到后端，外层宝塔 Nginx 处理域名和 SSL
+- **一键部署**：本地 `bash deploy.sh`，自动构建、导出、rsync 传输、远程加载并重启
+- **离线方案**：服务器在国内无法访问 Docker Hub，镜像本地构建后通过 rsync 传输
+- **前端**：容器内 Nginx 提供静态资源，外层宝塔 Nginx 处理 `/api/` 反代、域名和 SSL
 - **数据库**：MySQL 8.0 运行在宿主机，通过 `host.docker.internal` 连接
 
 ### 服务器手动部署
 
 ```bash
 cd /www/wwwroot/ai-inquiry
-docker compose pull && docker compose up -d        # 后端
-cd frontend && docker compose pull && docker compose up -d  # 前端
+docker load < ai-inquiry-backend.tar && docker load < ai-inquiry-frontend.tar
+docker compose up -d                                  # 一次启动全部服务
 docker image prune -f
 ```
 

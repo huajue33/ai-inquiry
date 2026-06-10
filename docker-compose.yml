@@ -1,7 +1,8 @@
 # ============================================================
-# 后端栈：Meilisearch + FastAPI Backend
-# MySQL 由宿主机自行提供（如宝塔/系统服务），通过 DB_HOST 连接。
-# 部署在 API 服务器。前端独立部署，见 frontend/docker-compose.yml
+# 全栈编排：Meilisearch + FastAPI 后端 + Nginx 前端
+# 一条 `docker compose up -d` 启动全部服务。
+# 三者在同一 docker 网络，前端用服务名 backend:8000 反代，无需经宿主机。
+# MySQL 由宿主机提供（宝塔/系统服务），后端通过 host.docker.internal 连接。
 # ============================================================
 services:
   meilisearch:
@@ -11,9 +12,6 @@ services:
     environment:
       MEILI_MASTER_KEY: ${MEILI_MASTER_KEY}
       MEILI_ENV: ${MEILI_ENV:-production}
-    ports:
-      # 仅本机调试用，生产建议注释掉
-      - "127.0.0.1:7700:7700"
     volumes:
       - meili_data:/meili_data
     healthcheck:
@@ -27,7 +25,7 @@ services:
       - quotation-net
 
   backend:
-    image: a3315300155/ai-inquiry-backend:latest
+    image: ai-inquiry-backend:latest
     container_name: quotation-backend
     restart: unless-stopped
     # 让容器内的 host.docker.internal 指向宿主机（连宝塔的 MySQL 用）
@@ -62,8 +60,20 @@ services:
       meilisearch:
         condition: service_healthy
     ports:
-      # 暴露给前端或公网（建议前面再加一层 nginx + HTTPS）
-      - "${BACKEND_PORT:-8000}:8000"
+      # 仅本机调试用（前端走 docker 网络访问，不依赖此端口）
+      - "127.0.0.1:${BACKEND_PORT:-8090}:8000"
+    networks:
+      - quotation-net
+
+  frontend:
+    image: ai-inquiry-frontend:latest
+    container_name: quotation-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      # 对外端口（宝塔反代到这里）
+      - "${WEB_PORT:-3010}:80"
     networks:
       - quotation-net
 
