@@ -4,8 +4,8 @@
 
 ```
 用户 → 宝塔 Nginx (:80/:443) ──── SSL 终止
-  └── /  → 127.0.0.1:3010 → quotation-frontend (容器内 Nginx + Vue)
-                              └── /api → backend:8000 → quotation-backend (FastAPI)
+  └── /  → 127.0.0.1:3010 → ai-inquiry-frontend (容器内 Nginx + Vue)
+                              └── /api → backend:8000 → ai-inquiry-backend (FastAPI)
                                                          ├── Meilisearch (容器)
                                                          └── MySQL 8.0 (宿主机)
 ```

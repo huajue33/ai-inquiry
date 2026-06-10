@@ -7,7 +7,7 @@
 set -uo pipefail
 
 # ---- 可调参数 ----
-CONTAINER="quotation-backend"      # 后端容器名
+CONTAINER="ai-inquiry-backend"     # 后端容器名
 KEEP_DAYS=30                       # 价格数据保留天数（最近一个月）
 PROJECT_DIR="/www/wwwroot/ai-inquiry"
 LOG_DIR="${PROJECT_DIR}/logs"
