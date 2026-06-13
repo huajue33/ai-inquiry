@@ -77,6 +77,13 @@ export const useChatStore = defineStore("chat", () => {
     }
   }
 
+  /** 本地先插入一条占位对话到列表顶部（新对话第一时间显示，标题后续由后台总结覆盖） */
+  function addLocalConversation(id: string, title: string) {
+    if (conversations.value.some((c) => c.id === id)) return
+    const now = new Date().toISOString()
+    conversations.value.unshift({ id, title, created_at: now, updated_at: now })
+  }
+
   // 加载可选模型列表
   async function loadModels() {
     try {
@@ -300,6 +307,7 @@ export const useChatStore = defineStore("chat", () => {
     completeToolCall,
     persistMessage,
     loadConversations,
+    addLocalConversation,
     loadModels,
     setModel,
     newConversation,

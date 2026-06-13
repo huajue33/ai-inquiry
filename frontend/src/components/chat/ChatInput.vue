@@ -353,6 +353,12 @@ async function handleSend() {
   // 捕获当前对话 ID，后续所有操作都绑定到这个 ID
   const targetConvId = chatStore.conversationId
 
+  // 新对话：第一时间往侧栏插入占位项（标题先用输入内容，后台总结后由 loadConversations 覆盖）
+  chatStore.addLocalConversation(
+    targetConvId,
+    text.length > 20 ? text.slice(0, 20) + "…" : text
+  )
+
   const userMsg: ChatMessage = {
     id: Date.now().toString(),
     role: "user",
