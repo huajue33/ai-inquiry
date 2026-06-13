@@ -213,6 +213,7 @@ function handleClear() {
 
 function handleUserCommand(command: string) {
   if (command === "logout") {
+    chatStore.reset()
     localStorage.removeItem("token")
     localStorage.removeItem("refresh_token")
     localStorage.removeItem("user")
@@ -252,6 +253,7 @@ async function submitChangePassword() {
     ElMessage.success("密码修改成功，请重新登录")
     passwordDialog.value = false
     // 清除登录状态，跳转到登录页
+    chatStore.reset()
     localStorage.removeItem("token")
     localStorage.removeItem("refresh_token")
     localStorage.removeItem("user")

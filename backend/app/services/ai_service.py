@@ -116,8 +116,14 @@ def _build_runtime_context() -> str:
     if user is None:
         return date_line + "\n当前匿名访问，没有数据查询权限。"
 
+    role_cn = {"admin": "管理员", "manager": "主管", "buyer": "采购员"}.get(user.role, user.role)
+
     if user.role in ("admin", "manager"):
-        return date_line + f"\n当前用户角色 {user.role}，可访问全部分类。"
+        return (
+            date_line
+            + f"\n当前用户：{user.real_name}（{role_cn}），可访问全部分类。"
+            "若用户问“我是谁”之类，用其姓名和中文角色回答，不要暴露英文角色代码。"
+        )
 
     db = SessionLocal()
     try:

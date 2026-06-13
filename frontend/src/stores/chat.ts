@@ -268,6 +268,17 @@ export const useChatStore = defineStore("chat", () => {
     return conversationStates.has(id) && conversationStates.get(id)!.loading
   }
 
+  /** 重置全部会话相关状态（用于退出登录 / 切换账号，避免串号） */
+  function reset() {
+    conversationId.value = ""
+    conversations.value = []
+    conversationStates.clear()
+    enableThinking.value = false
+    enableWebSearch.value = false
+    availableModels.value = []
+    defaultModel.value = ""
+  }
+
   return {
     messages,
     conversationId,
@@ -301,5 +312,6 @@ export const useChatStore = defineStore("chat", () => {
     setEnableThinking,
     setEnableWebSearch,
     setConversationId,
+    reset,
   }
 })
