@@ -109,7 +109,7 @@ def generate_new_price(current_price: float) -> float:
     direction = random.choice([-1, 1])
     new_price = current_price * (1 + direction * change_pct)
     new_price = max(0.1, new_price)  # 确保价格不低于 0.1
-    return round(new_price, 4)
+    return round(new_price, 2)
 
 
 def generate_range(cursor, current_prices, product_ids, start_date, end_date):
