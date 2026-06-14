@@ -16,20 +16,21 @@
     python generate_prices.py --keep-days 7   # 改为只保留最近 7 天
     python generate_prices.py --no-prune      # 只生成，不删除旧数据
 """
-import os
 import sys
 import random
 from datetime import date, timedelta
-
 import pymysql
+from app.config import get_settings
 
-# 数据库连接（优先读环境变量，方便容器内运行）
+_settings = get_settings()
+
+# 数据库连接
 conn = pymysql.connect(
-    host=os.getenv("DB_HOST", "127.0.0.1"),
-    port=int(os.getenv("DB_PORT", "3306")),
-    user=os.getenv("DB_USER", "root"),
-    password=os.getenv("DB_PASSWORD", ""),
-    database=os.getenv("DB_NAME", "quotation"),
+    host=_settings.db_host,
+    port=_settings.db_port,
+    user=_settings.db_user,
+    password=_settings.db_password,
+    database=_settings.db_name,
     charset="utf8mb4",
 )
 
@@ -166,6 +167,7 @@ def prune_old(cursor, cutoff_date):
 
 
 def main():
+    """增量生成价格数据到今天，并按保留窗口清理旧数据（脚本入口）。"""
     keep_days, prune = parse_args()
     cursor = conn.cursor()
 

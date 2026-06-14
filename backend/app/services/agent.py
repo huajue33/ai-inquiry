@@ -11,6 +11,7 @@ from app.tools.price_tools import (
     get_price_history,
     get_price_ranking,
     get_category_price_summary,
+    batch_quote,
 )
 from app.tools.web_tools import web_search
 
@@ -54,6 +55,7 @@ _price_tools = [
     get_price_history,
     get_price_ranking,
     get_category_price_summary,
+    batch_quote,
 ]
 _all_tools = [*_price_tools, web_search]
 

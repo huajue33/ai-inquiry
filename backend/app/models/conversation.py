@@ -3,6 +3,7 @@ from app.database import Base
 
 
 class Conversation(Base):
+    """一次对话会话（归属某用户，逻辑删除）。"""
     __tablename__ = "conversations"
 
     id = Column(String(36), primary_key=True)
@@ -14,6 +15,7 @@ class Conversation(Base):
 
 
 class ChatMessage(Base):
+    """对话中的单条消息（user / assistant）。"""
     __tablename__ = "chat_messages"
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)

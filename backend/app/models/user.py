@@ -3,6 +3,7 @@ from app.database import Base
 
 
 class User(Base):
+    """用户账号（admin / manager / buyer 三种角色）。"""
     __tablename__ = "users"
 
     id = Column(Integer, primary_key=True, autoincrement=True)

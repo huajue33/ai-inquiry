@@ -9,6 +9,7 @@ from app.schemas.chat import ChatRequest
 from app.services import ai_service, asr_service
 from app.services.realtime_asr import RealtimeAsrSession
 from app.models.user import User
+from app.models.conversation import Conversation
 from app.database import SessionLocal
 from app.core.security import get_current_user, decode_token
 from app.core.permissions import current_user_var
@@ -154,10 +155,32 @@ async def asr_stream(websocket: WebSocket):
             pass
 
 
+def _verify_conversation_access(conversation_id: str, user: User) -> None:
+    """校验会话归属：会话存在且不属于当前用户时拒绝（防越权读取他人历史）。
+
+    会话不存在视为"新会话"，放行（首条消息时由前端/服务端按当前用户创建）。
+    """
+    db = SessionLocal()
+    try:
+        conv = (
+            db.query(Conversation)
+            .filter(Conversation.id == conversation_id)
+            .first()
+        )
+        if conv is not None and conv.user_id != user.id:
+            raise HTTPException(status_code=403, detail="无权访问该对话")
+    finally:
+        db.close()
+
+
 @router.post("/stream")
 async def chat_stream(request: ChatRequest, user: User = Depends(get_current_user)):
     """流式接口 - SSE（支持思考模式）"""
     conversation_id = request.conversation_id or str(uuid.uuid4())
+
+    # 越权防护：只有当请求显式带了已存在的 conversation_id 时才需要校验归属
+    if request.conversation_id:
+        _verify_conversation_access(conversation_id, user)
 
     # 把 user 也带给生成器（StreamingResponse 内的迭代发生在另一个上下文，
     # 需要在生成器内部重新 set 一次 ContextVar）
@@ -167,7 +190,7 @@ async def chat_stream(request: ChatRequest, user: User = Depends(get_current_use
         try:
             async for chunk in ai_service.chat_stream(
                 request.message, conversation_id, request.enable_thinking,
-                request.enable_web_search, request.model,
+                request.model,
             ):
                 yield chunk
         finally:

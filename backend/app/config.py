@@ -32,6 +32,7 @@ class Settings(BaseSettings):
 
     @property
     def database_url(self) -> str:
+        """SQLAlchemy 连接串（mysql+pymysql，utf8mb4）。"""
         return (
             f"mysql+pymysql://{self.db_user}:{self.db_password}"
             f"@{self.db_host}:{self.db_port}/{self.db_name}?charset=utf8mb4"

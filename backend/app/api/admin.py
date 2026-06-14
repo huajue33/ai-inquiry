@@ -27,6 +27,7 @@ from app.core.permissions import (
     require_admin_or_manager,
     require_authed,
 )
+from app.services.category_cache import build_path_map
 
 router = APIRouter()
 
@@ -224,19 +225,8 @@ async def list_products(
     total = query.count()
     products = query.offset((page - 1) * page_size).limit(page_size).all()
 
-    # 分类名（拼接完整路径：一级>二级>三级）
-    cat_ids = list(set(p.category_id for p in products if p.category_id))
-    cat_map = {}
-    if cat_ids:
-        all_cats = db.query(Category).all()
-        cat_dict = {c.id: c for c in all_cats}
-        for cat_id in cat_ids:
-            names = []
-            current = cat_dict.get(cat_id)
-            while current:
-                names.insert(0, current.name)
-                current = cat_dict.get(current.parent_id)
-            cat_map[cat_id] = " > ".join(names)
+    # 分类名（完整路径：一级>二级>三级），复用 category_cache 的统一实现
+    cat_map = build_path_map()
 
     # 批量获取最新价格
     product_ids = [p.product_id for p in products]

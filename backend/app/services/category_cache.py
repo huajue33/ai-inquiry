@@ -63,3 +63,45 @@ def invalidate() -> None:
     with _lock:
         _cache["rows"] = None
         _cache["ts"] = 0.0
+
+
+def expand_subtree(root_ids) -> set[int]:
+    """返回给定分类 ID 及其所有后代分类 ID 的集合（基于缓存的分类树 BFS）。
+
+    统一替代散落各处"建 parent->children 再 BFS 展开子树"的重复实现。
+    """
+    roots = {int(i) for i in root_ids}
+    if not roots:
+        return set()
+
+    children_map: dict[int, list[int]] = {}
+    for c in get_all_categories():
+        if c.parent_id:
+            children_map.setdefault(c.parent_id, []).append(c.id)
+
+    result = set(roots)
+    queue = list(roots)
+    while queue:
+        pid = queue.pop(0)
+        for cid in children_map.get(pid, []):
+            if cid not in result:
+                result.add(cid)
+                queue.append(cid)
+    return result
+
+
+def build_path_map(separator: str = " > ") -> dict[int, str]:
+    """category_id → 完整路径名（如 '一级 > 二级 > 三级'，基于缓存的分类树）。
+
+    统一替代散落各处"沿 parent_id 向上拼接路径"的重复实现。
+    """
+    cats = {c.id: c for c in get_all_categories()}
+    result: dict[int, str] = {}
+    for cid, cat in cats.items():
+        names: list[str] = []
+        current = cat
+        while current:
+            names.insert(0, current.name)
+            current = cats.get(current.parent_id)
+        result[cid] = separator.join(names)
+    return result

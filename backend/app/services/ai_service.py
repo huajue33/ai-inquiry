@@ -24,6 +24,9 @@ logger = logging.getLogger(__name__)
 # Agent 图递归上限（兜底；工具层已对 search_products 限次，这里防其他失控）
 AGENT_RECURSION_LIMIT = 15
 
+# 每轮结束给前端的快捷建议（固定文案，多处复用）
+DEFAULT_SUGGESTIONS = ["查询今日蔬菜价格", "对比不同品牌食用油价格", "查看近7天鸡蛋价格趋势"]
+
 
 # ── 产品 ID 标记校验（防幻觉链接） ──────────────────────
 
@@ -155,7 +158,7 @@ def _build_runtime_context() -> str:
 
 # ── 流式入口 ────────────────────────────────────────────
 
-async def chat_stream(message: str, conversation_id: str, enable_thinking: bool = False, enable_web_search: bool = False, model: str | None = None) -> AsyncGenerator[str, None]:
+async def chat_stream(message: str, conversation_id: str, enable_thinking: bool = False, model: str | None = None) -> AsyncGenerator[str, None]:
     """根据模式分派到常规流式或思考流式，以SSE格式输出AI回复。
 
     无论正常结束还是客户端中途断开（关闭页面/点停止），都会在 finally 中由服务端
@@ -194,7 +197,7 @@ async def chat_stream(message: str, conversation_id: str, enable_thinking: bool 
         done_data = {
             "event": "done",
             "data": {
-                "suggestions": ["查询今日蔬菜价格", "对比不同品牌食用油价格", "查看近7天鸡蛋价格趋势"],
+                "suggestions": DEFAULT_SUGGESTIONS,
                 "conversation_id": conversation_id,
                 "usage": acc.get("usage", {}),
                 "content": acc["content"],
@@ -326,7 +329,7 @@ async def _stream(message: str, conversation_id: str, acc: dict, model: str, thi
     valid_ids = _collect_valid_ids(history, "\n".join(all_tool_outputs))
     acc["content"] = _scrub_invalid_id_markers(acc.get("content", ""), valid_ids)
 
-    suggestions = ["查询今日蔬菜价格", "对比不同品牌食用油价格", "查看近7天鸡蛋价格趋势"]
+    suggestions = DEFAULT_SUGGESTIONS
     acc["usage"] = usage_data
     acc["suggestions"] = suggestions
 

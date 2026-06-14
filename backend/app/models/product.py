@@ -4,6 +4,7 @@ from app.database import Base
 
 
 class Category(Base):
+    """商品分类（自引用树：一级 / 二级 / 三级）。"""
     __tablename__ = "categories"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -16,6 +17,7 @@ class Category(Base):
 
 
 class Product(Base):
+    """商品基础信息（价格存于 Price 表，按 product_id 关联）。"""
     __tablename__ = "products"
 
     product_id = Column(Integer, primary_key=True)

@@ -47,7 +47,6 @@ def setup_index():
         "quality",
     ])
 
-    # 设置可过滤字段
     index.update_filterable_attributes([
         "brand",
         "category_id",
@@ -56,7 +55,6 @@ def setup_index():
         "product_id",
     ])
 
-    # 设置可排序字段
     index.update_sortable_attributes([
         "product_name",
         "brand",
@@ -67,7 +65,6 @@ def setup_index():
     # "keyword 命中分类名 → 限定子树"承接。
     index.update_synonyms(meili_synonyms())
 
-    # 设置 typo tolerance
     index.update_typo_tolerance({
         "enabled": True,
         "minWordSizeForTypos": {
@@ -76,7 +73,6 @@ def setup_index():
         },
     })
 
-    # 设置分页限制
     index.update_pagination_settings({"maxTotalHits": 1000})
 
     return index

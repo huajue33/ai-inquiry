@@ -5,7 +5,7 @@ import logging
 
 from app.models.product import Product
 from app.models.price import Price
-from app.services.category_cache import get_all_categories
+from app.services.category_cache import get_all_categories, expand_subtree
 from app.core.aliases import alias_to_canonical
 
 logger = logging.getLogger(__name__)
@@ -98,30 +98,13 @@ def _resolve_keyword_to_category_subtree(db: Session, keyword: str) -> list[int]
     if not matched:
         return None
 
-    # 收集每个匹配分类的子树 ID（含自身）
-    parent_to_children: dict[int, list[int]] = {}
-    for c in all_cats:
-        if c.parent_id:
-            parent_to_children.setdefault(c.parent_id, []).append(c.id)
-
-    result_ids: set[int] = set()
-    for cat in matched:
-        result_ids.add(cat.id)
-        queue = [cat.id]
-        while queue:
-            pid = queue.pop(0)
-            for cid in parent_to_children.get(pid, []):
-                if cid not in result_ids:
-                    result_ids.add(cid)
-                    queue.append(cid)
-
-    # 只在"叶子分类匹配"或"匹配的分类是非顶层"时生效
+    # 只在"叶子分类匹配"或"匹配的分类是非顶层"时生效。
     # 一级分类（level=1）的名字（如"蔬菜水果""调味品"）不该走这个路径，
     # 因为它会把整个一级分类锁住，反而影响正常全文搜索。
     if all(c.level == 1 for c in matched):
         return None
 
-    return list(result_ids)
+    return list(expand_subtree(c.id for c in matched))
 
 
 def _intersect(a: list[int] | None, b: list[int] | None) -> list[int] | None:

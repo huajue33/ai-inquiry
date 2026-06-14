@@ -14,6 +14,7 @@ from datetime import date
 from typing import Optional
 
 from langchain_core.tools import tool
+from pydantic import BaseModel, Field
 
 from app.database import SessionLocal
 from app.models.product import Product
@@ -30,7 +31,7 @@ from app.core.permissions import (
     get_allowed_category_ids,
     intersect_category_ids,
 )
-from app.services.category_cache import get_all_categories
+from app.services.category_cache import get_all_categories, expand_subtree, build_path_map
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,11 @@ _allowed_ids_loaded: ContextVar[bool] = ContextVar(
 # 单次请求内 search_products 的调用计数（防止模型反复换词重试导致死循环 / 撞递归上限）
 _search_call_count: ContextVar[int] = ContextVar("_search_call_count", default=0)
 MAX_SEARCH_CALLS = 5
+
+# batch_quote（多品询价）约束：条目上限 / 每条内联报价的候选上限 / 每条搜索拉取量
+BATCH_MAX_ITEMS = 12
+BATCH_CANDIDATES_PER_ITEM = 5
+BATCH_SEARCH_FETCH = 30
 
 
 def reset_permission_cache():
@@ -65,9 +71,11 @@ def _allowed_ids(db) -> Optional[list[int]]:
 
     user = get_current_user_from_context()
     if user is None:
+        # fail-closed：上下文里拿不到用户（理论上不应发生，如 ContextVar 未传播）时，
+        # 一律按"无任何权限"处理，绝不放开数据访问（纵深防御）。
         _allowed_ids_loaded.set(True)
-        _allowed_ids_cache.set(None)
-        return None
+        _allowed_ids_cache.set([])
+        return []
 
     ids = get_allowed_category_ids(db, user)
     _allowed_ids_loaded.set(True)
@@ -124,21 +132,7 @@ def _resolve_category_filter(db, category_name: str):
             name=category_name,
         )
 
-    parent_map: dict[int, list[int]] = {}
-    for c in all_cats:
-        if c.parent_id:
-            parent_map.setdefault(c.parent_id, []).append(c.id)
-
-    expanded = set(matched_ids)
-    queue = list(matched_ids)
-    while queue:
-        pid = queue.pop(0)
-        for cid in parent_map.get(pid, []):
-            if cid not in expanded:
-                expanded.add(cid)
-                queue.append(cid)
-
-    requested = list(expanded)
+    requested = list(expand_subtree(matched_ids))
     final_ids = intersect_category_ids(_allowed_ids(db), requested)
 
     if final_ids == []:
@@ -182,18 +176,13 @@ def _filter_allowed_products(db, product_ids: list[int]):
     return allowed_pids, denied_pids
 
 
-def _build_category_path_map(db) -> dict[int, str]:
-    """一次查询，构建 category_id → '一级 > 二级 > 三级' 路径映射"""
-    cats = {c.id: c for c in get_all_categories()}
-    result = {}
-    for cat_id, cat in cats.items():
-        names = []
-        current = cat
-        while current:
-            names.insert(0, current.name)
-            current = cats.get(current.parent_id)
-        result[cat_id] = " > ".join(names)
-    return result
+def _filter_brand_quality(products, brand: str, quality: str):
+    """按品牌（大小写不敏感子串）与品质（子串）过滤产品列表。"""
+    if brand:
+        products = [p for p in products if brand.lower() in (p.brand or "").lower()]
+    if quality:
+        products = [p for p in products if quality in (p.quality or "")]
+    return products
 
 
 # ============================================================
@@ -252,10 +241,7 @@ def search_products(
             db, keyword, category_ids=category_ids, limit=fetch_limit
         )
 
-        if brand:
-            products = [p for p in products if brand.lower() in (p.brand or "").lower()]
-        if quality:
-            products = [p for p in products if quality in (p.quality or "")]
+        products = _filter_brand_quality(products, brand, quality)
 
         total = len(products)
         if total == 0:
@@ -267,7 +253,7 @@ def search_products(
             })
 
         top = products[:limit]
-        cat_path_map = _build_category_path_map(db)
+        cat_path_map = build_path_map()
 
         result = {
             "total": total,
@@ -614,5 +600,128 @@ def get_category_price_summary(category: str, as_of: str = "") -> str:
             })
 
         return _ok({"category": category, "as_of": str(as_of_date), **summary})
+    finally:
+        db.close()
+
+
+# ============================================================
+# Tool 6: 多品批量询价（询价单）
+# ============================================================
+
+class QuoteItem(BaseModel):
+    """单个询价条目。"""
+    keyword: str = Field(description="商品名或关键词，必填")
+    brand: str = Field(default="", description="品牌过滤，可选")
+    quality: str = Field(default="", description="品质过滤，如'特级''一级'，可选")
+    category: str = Field(default="", description="分类名过滤，如'蔬菜''调味品'，可选")
+
+
+@tool
+def batch_quote(items: list[QuoteItem], as_of: str = "") -> str:
+    """一次性查询多个商品的当前价格（询价单 / 多品询价场景）。
+
+    当用户在一句话里询问多个商品价格（如"土豆、白菜、鸡蛋各多少钱"）时用本工具：
+    把每个商品填入 items，一次调用返回全部结果，不要逐个调用 search_products。
+    单个商品的快速查价也可用本工具（items 只放一个）。
+
+    内部对每条 item 自动走"搜索 → 取价"，按命中情况返回不同 status：
+    - ok                命中唯一商品，matched 含价格
+    - multi             命中多个（≤5），candidates 列出各自价格供用户挑选
+    - ambiguous         命中过多，groups 给出分组概览，应反问用户细化
+    - not_found         未找到，或找到商品但近期无报价
+    - permission_denied / category_not_found  无该分类权限 / 分类不存在
+
+    Args:
+        items: 询价条目列表，最多 12 个（超出截断）。
+        as_of: 截止日期 YYYY-MM-DD（可选，默认今天）。
+
+    返回 JSON 字段：
+    - as_of
+    - results: [{keyword, status, matched?, candidates?, groups?, hint?}]
+      价格对象：{product_id, name, brand, price, unit, quoted_at}
+    - summary: 各 status 的计数 + total
+    """
+    db = SessionLocal()
+    try:
+        no_perm = _check_any_permission(db)
+        if no_perm:
+            return no_perm
+        if not items:
+            return _err("invalid_input", "items 不能为空")
+
+        if as_of:
+            try:
+                as_of_date = date.fromisoformat(as_of)
+            except ValueError:
+                return _err("invalid_input", f"as_of 日期格式错误：{as_of}，应为 YYYY-MM-DD")
+        else:
+            as_of_date = date.today()
+
+        items = items[:BATCH_MAX_ITEMS]
+
+        # 阶段 1：逐条搜索 + 权限过滤；ok/multi 候选的 Product 对象暂存，product_id 汇总待批量取价
+        plans: list[dict] = []
+        price_pids: list[int] = []
+        for item in items:
+            keyword = (item.keyword or "").strip()
+            if not keyword:
+                plans.append({"keyword": item.keyword or "", "status": "not_found", "hint": "关键词为空"})
+                continue
+
+            category_ids, err = _resolve_category_filter(db, item.category)
+            if err:
+                e = json.loads(err)
+                plans.append({"keyword": keyword, "status": e.get("error", "not_found"),
+                              "hint": e.get("message", "")})
+                continue
+
+            products = search_products_db(db, keyword, category_ids=category_ids, limit=BATCH_SEARCH_FETCH)
+            products = _filter_brand_quality(products, item.brand, item.quality)
+            total = len(products)
+
+            if total == 0:
+                plans.append({"keyword": keyword, "status": "not_found",
+                              "hint": f"未找到包含'{keyword}'的商品"})
+            elif total > BATCH_CANDIDATES_PER_ITEM:
+                groups = group_products_for_clarify(products, max_groups=6)
+                plans.append({"keyword": keyword, "status": "ambiguous",
+                              "groups": [{"name": g["name"], "count": g["count"],
+                                          "sample_ids": g["sample_ids"]} for g in groups]})
+            else:
+                cand = products[:BATCH_CANDIDATES_PER_ITEM]
+                price_pids.extend(p.product_id for p in cand)
+                plans.append({"keyword": keyword, "_products": cand})
+
+        # 阶段 2：所有候选一次性批量取价
+        price_map = get_latest_prices_batch(db, price_pids, as_of_date=as_of_date) if price_pids else {}
+
+        def _priced(p) -> Optional[dict]:
+            pr = price_map.get(p.product_id)
+            if not pr:
+                return None
+            return {"product_id": p.product_id, "name": p.product_name, "brand": p.brand or "",
+                    "price": float(pr.price_value), "unit": pr.price_unit, "quoted_at": str(pr.price_date)}
+
+        # 阶段 3：回填价格并定 status（找到商品但无报价 → not_found）
+        results: list[dict] = []
+        for plan in plans:
+            cand = plan.pop("_products", None)
+            if cand is None:
+                results.append(plan)
+                continue
+            priced = [x for x in (_priced(p) for p in cand) if x]
+            if not priced:
+                results.append({"keyword": plan["keyword"], "status": "not_found",
+                                "hint": "找到商品但近期无报价数据"})
+            elif len(priced) == 1:
+                results.append({"keyword": plan["keyword"], "status": "ok", "matched": priced[0]})
+            else:
+                results.append({"keyword": plan["keyword"], "status": "multi", "candidates": priced})
+
+        summary: dict[str, int] = {"total": len(results)}
+        for r in results:
+            summary[r["status"]] = summary.get(r["status"], 0) + 1
+
+        return _ok({"as_of": str(as_of_date), "results": results, "summary": summary})
     finally:
         db.close()

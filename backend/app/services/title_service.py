@@ -38,7 +38,6 @@ async def generate_title(user_message: str) -> str:
         title = response.choices[0].message.content.strip()
         # 去掉可能的引号和多余标点
         title = title.strip('"\'""''《》')
-        # 限制长度
         if len(title) > 20:
             title = title[:20]
         return title or user_message[:15]

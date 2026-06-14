@@ -60,18 +60,10 @@ def get_allowed_category_ids(db: Session, user: User) -> Optional[List[int]]:
     if not perms:
         return []
 
-    second_level_ids = [p.category_id for p in perms]
-
-    # 展开到三级
-    third_level = (
-        db.query(Category)
-        .filter(Category.parent_id.in_(second_level_ids))
-        .all()
-    )
-    leaf_ids = [c.id for c in third_level]
-
-    # 返回二级 + 三级，确保无论产品关联哪一级、工具传哪一级都能匹配
-    return list(set(second_level_ids + leaf_ids))
+    # 被授权的二级分类 + 其完整子树（三级/更深），统一用 category_cache 展开，
+    # 确保无论产品关联哪一级、工具传哪一级都能匹配。
+    from app.services.category_cache import expand_subtree
+    return list(expand_subtree(p.category_id for p in perms))
 
 
 def intersect_category_ids(

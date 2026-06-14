@@ -3,6 +3,7 @@ from app.database import Base
 
 
 class Price(Base):
+    """商品某日报价（生鲜价格非每日更新，查询时按日期向前回溯取有效价）。"""
     __tablename__ = "prices"
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
