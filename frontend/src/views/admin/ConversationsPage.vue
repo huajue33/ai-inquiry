@@ -98,7 +98,7 @@
                 <el-collapse-item :title="`Agent 执行流程（${msg.tool_trace.length} 次工具调用）`">
                   <div v-for="(t, i) in msg.tool_trace" :key="i" class="trace-step">
                     <div class="trace-step-head">
-                      <span class="trace-idx">{{ i + 1 }}</span>
+                      <span class="trace-idx">{{ Number(i) + 1 }}</span>
                       <span class="trace-tool">{{ t.tool }}</span>
                       <el-tag :type="traceTagType(t.status)" size="small">{{ t.status || '-' }}</el-tag>
                       <span v-if="t.duration_ms != null" class="trace-dur">{{ fmtMs(t.duration_ms) }}</span>
