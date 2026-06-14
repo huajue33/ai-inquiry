@@ -18,9 +18,13 @@
 
 ### 核心功能
 - **自然语言询价** — 输入产品名称即可查询最新价格
+- **多品批量询价** — 一句话查询多个商品价格（询价单场景），一次返回
 - **价格趋势分析** — 查看产品近期价格走势和涨跌排行
+- **品类行情概览** — 宽泛品类问题返回价格区间、均价与品牌分布，不逐个枚举
 - **智能比价** — 多品牌、多品质横向对比
+- **联网行情补充** — 内部库查不到时自动联网检索，并显式标注「网络参考价」
 - **模糊搜索** — 支持 Meilisearch 全文检索，中文分词、同义词、容错匹配
+- **模型选择与自动路由** — 可手动选模型，或用「自动」档按问题复杂度路由轻量/主模型
 - **深度思考模式** — 可选开启 AI 推理过程，获得更深入的分析
 - **产品名可点击** — AI 回复中的产品名可点击查看详情和历史价格图表
 
@@ -30,7 +34,8 @@
 - **上下文记忆** — 支持多轮对话，AI 理解追问意图
 - **对话历史** — 自动保存，支持切换和恢复
 - **多对话并行** — 切换对话不中断正在运行的请求
-- **语音输入** — 按住说话，松开发送（Web Speech API）
+- **对话回滚** — 可回滚到某条消息重新提问（软删除，后台审计与 Token 统计仍保留）
+- **语音输入** — 支持录音上传转写与实时语音识别（后端百炼 ASR，非浏览器 Web Speech）
 
 ### 管理后台
 - **数据概览** — 用户数、商品数、对话数、Token 消耗统计图表
@@ -49,8 +54,9 @@
 | 层次 | 技术 |
 |------|------|
 | 后端框架 | FastAPI (Python 3.11) |
-| AI 框架 | LangChain 0.3 + Agent + Tool Calling |
-| LLM | 阿里云百炼 (通义千问 qwen3.5-plus / qwen-turbo) |
+| AI 框架 | LangChain 1.x + LangGraph（Agent + Tool Calling） |
+| LLM | 阿里云百炼（通义千问，支持多模型选择 + 「自动」复杂度路由 + 深度思考） |
+| 语音识别 | 阿里云百炼 ASR（qwen3-asr-flash，录音转写 + 实时 WebSocket 流式） |
 | 搜索引擎 | Meilisearch 1.11（中文分词、同义词、容错） |
 | 数据库 | MySQL 8.0 + SQLAlchemy 2.0 |
 | 前端框架 | Vue 3.5 + TypeScript + Vite 8 |
@@ -72,15 +78,19 @@
 │   │   │   └── admin.py        # 管理后台 API
 │   │   ├── core/
 │   │   │   ├── prompts.py      # 系统提示词
+│   │   │   ├── models.py       # 可选模型注册表 + 「自动」复杂度路由
 │   │   │   ├── security.py     # JWT + Refresh Token + 密码加密
 │   │   │   └── permissions.py  # 角色权限 + 数据权限（分类级）
 │   │   ├── models/             # ORM 模型
 │   │   ├── services/
-│   │   │   ├── ai_service.py   # LangChain Agent + 流式 + 思考模式
+│   │   │   ├── ai_service.py   # LangGraph Agent + 流式 + 思考模式
+│   │   │   ├── agent.py        # Agent 装配（工具集 + ReasoningChatOpenAI）
 │   │   │   ├── price_service.py # 价格查询（Meilisearch + MySQL）
 │   │   │   ├── search_service.py # Meilisearch 索引管理
+│   │   │   ├── asr_service.py  # 语音转写（百炼 ASR）
+│   │   │   ├── realtime_asr.py # 实时语音识别会话（WebSocket）
 │   │   │   └── title_service.py  # 对话标题生成（轻量模型）
-│   │   ├── tools/              # LangChain 工具（查价/趋势/排行/比价/追问）
+│   │   ├── tools/              # LangChain 工具（搜索/查价/趋势/排行/品类概览/批量询价/联网搜索）
 │   │   ├── config.py           # 配置管理
 │   │   ├── database.py         # 数据库连接
 │   │   └── main.py             # FastAPI 入口
@@ -165,8 +175,14 @@ npm run dev
 | POST | /api/auth/refresh | 刷新 token |
 | POST | /api/auth/change-password | 修改密码 |
 | GET | /api/auth/me | 当前用户信息 |
-| POST | /api/chat/stream | 流式对话（SSE） |
+| POST | /api/chat/stream | 流式对话（SSE，支持思考模式与模型选择） |
+| GET | /api/chat/models | 可选模型列表及默认模型 |
+| POST | /api/chat/transcribe | 语音转写（上传音频返回文本） |
+| WS | /api/chat/asr-stream | 实时语音识别（WebSocket） |
 | GET | /api/conversations/ | 对话列表 |
+| POST | /api/conversations/create | 新建对话 |
+| GET | /api/conversations/:id | 对话详情（含消息） |
+| POST | /api/conversations/:id/rollback | 回滚到指定消息（软删除） |
 | POST | /api/conversations/message | 保存消息 |
 | GET | /api/admin/stats | 管理后台统计 |
 | GET | /api/admin/products | 商品列表（支持 ID/名称搜索） |
@@ -192,14 +208,15 @@ npm run dev
 │  │ Refresh │    │ + Tools      │    └───────────────────┘   │
 │  └─────────┘    └──────┬───────┘                            │
 │                         │ Tool Calling                        │
-│              ┌──────────▼──────────┐                         │
-│              │ 查价/趋势/排行/比价  │                         │
-│              └──────────┬──────────┘                         │
+│              ┌──────────▼──────────────────────┐              │
+│              │ 搜索/查价/趋势/排行/品类概览/     │              │
+│              │ 批量询价/联网搜索                 │              │
+│              └──────────┬──────────────────────┘              │
 │                         │                                    │
 │         ┌───────────────┼───────────────┐                    │
 │         ▼               ▼               ▼                    │
 │    Meilisearch      MySQL          通义千问 (百炼)            │
-│    (模糊搜索)    (价格/产品/用户)   (LLM 推理)               │
+│    (模糊搜索)    (价格/产品/用户)   (LLM + ASR)              │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -210,10 +227,11 @@ npm run dev
 ### 架构
 
 ```
-用户 → 宝塔 Nginx (:80, SSL)
-  ├── /     → 127.0.0.1:3010  (前端 Docker 容器)
-  └── /api/ → 127.0.0.1:8090  (后端 Docker 容器)
+用户 → 宝塔 Nginx (:80/:443, SSL) → 127.0.0.1:3010 (前端 Docker 容器)
+                                        └── 容器内 Nginx 反代 /api → backend:8000 (后端容器)
 ```
+
+> 单入口架构：宝塔只反代到前端容器；前端容器内的 Nginx 负责静态资源，并把 `/api`（含 SSE / WebSocket）通过 docker 网络转发给后端容器，无需在宝塔单独配置 `/api/`。
 
 ### 部署流程
 

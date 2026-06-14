@@ -13,7 +13,7 @@
 | 图表 | ECharts 6 |
 | 状态管理 | Pinia 3 |
 | HTTP | Axios + SSE 流式 |
-| 语音 | Web Speech API |
+| 语音 | 录音上传转写 + 实时 WebSocket 语音识别（后端百炼 ASR） |
 
 ## 本地开发
 
@@ -25,14 +25,14 @@ npm run build            # 生产构建 → dist/
 
 ## 构建与部署
 
-前端通过 Docker 多阶段构建编译为 Nginx 静态资源，镜像推送到 Docker Hub：
+前端通过 Docker 多阶段构建编译为 Nginx 静态资源。由于国内服务器无法访问 Docker Hub，采用**离线部署**：本地构建镜像 → `docker save` 导出 tar → rsync 传输到服务器 → `docker load` 加载 → 重启容器。
 
 ```bash
-# 项目根目录
-bash deploy.sh   # 构建 + 导出 + rsync 传输 + 远程部署
+# 项目根目录，一键完成构建 + 导出 + rsync 传输 + 远程 docker load + 重启
+bash deploy.sh
 ```
 
-服务器通过 `docker compose pull && docker compose up -d` 拉取运行。
+详见根目录 [DEPLOY.md](../DEPLOY.md)。
 
 ## 项目结构
 
@@ -44,10 +44,12 @@ frontend/
 │   │   ├── chat.ts           # 流式对话 API
 │   │   └── conversation.ts   # 对话 CRUD API
 │   ├── components/chat/
-│   │   ├── ChatInput.vue     # 输入框（含语音识别、思考模式开关）
+│   │   ├── ChatInput.vue     # 输入框（含语音识别、思考模式开关、模型选择）
 │   │   └── MessageList.vue   # 消息列表（Markdown + 图表 + 产品链接）
 │   ├── composables/
-│   │   └── useAudioRecorder.ts  # 录音（WAV）封装，配合后端 ASR
+│   │   ├── useAudioRecorder.ts   # 录音（WAV）封装，配合后端 ASR 转写
+│   │   ├── useMicCapture.ts      # 麦克风采集（PCM 帧）
+│   │   └── useRealtimeAsr.ts     # 实时语音识别（WebSocket 流式）
 │   ├── stores/
 │   │   └── chat.ts           # 多对话并行状态管理
 │   ├── views/
