@@ -126,7 +126,7 @@
       </header>
 
       <div class="chat-body">
-        <MessageList @quick="handleQuickQuestion" />
+        <MessageList @quick="handleQuickQuestion" @rollback="handleRollbackFill" />
       </div>
 
       <div class="chat-footer">
@@ -268,6 +268,13 @@ async function submitChangePassword() {
 function handleQuickQuestion(q: string) {
   if (chatInputRef.value?.sendFromOutside) {
     chatInputRef.value.sendFromOutside(q)
+  }
+}
+
+/** 回滚后把被删消息内容回填到输入框（不自动发送，便于用户修改后再发） */
+function handleRollbackFill(content: string) {
+  if (chatInputRef.value?.fillInput) {
+    chatInputRef.value.fillInput(content)
   }
 }
 </script>

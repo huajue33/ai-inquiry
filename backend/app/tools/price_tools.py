@@ -185,6 +185,23 @@ def _filter_brand_quality(products, brand: str, quality: str):
     return products
 
 
+def _price_overview(priced: list[dict]) -> list[dict]:
+    """对一批已报价候选按计价单位聚合区间/均价（用于 batch_quote 的 overview）。
+
+    不同单位（元/斤、元/袋）分别统计，避免混算；按数量降序。
+    """
+    by_unit: dict[str, list[float]] = {}
+    for x in priced:
+        by_unit.setdefault(x["unit"] or "", []).append(x["price"])
+    out = [
+        {"unit": unit, "count": len(vals),
+         "min": round(min(vals), 2), "max": round(max(vals), 2),
+         "avg": round(sum(vals) / len(vals), 2)}
+        for unit, vals in by_unit.items()
+    ]
+    return sorted(out, key=lambda d: d["count"], reverse=True)
+
+
 # ============================================================
 # Tool 1: 搜索候选商品
 # ============================================================
@@ -626,8 +643,9 @@ def batch_quote(items: list[QuoteItem], as_of: str = "") -> str:
 
     内部对每条 item 自动走"搜索 → 取价"，按命中情况返回不同 status：
     - ok                命中唯一商品，matched 含价格
-    - multi             命中多个（≤5），candidates 列出各自价格供用户挑选
-    - ambiguous         命中过多，groups 给出分组概览，应反问用户细化
+    - multi             命中数款（≤5），candidates 列出各自价格供用户挑选
+    - overview          命中很多（>5），by_unit 给价格区间/均价，samples 给最便宜的几款
+                        代表（含价格）；直接报区间+代表款，细化是可选项而非前置条件
     - not_found         未找到，或找到商品但近期无报价
     - permission_denied / category_not_found  无该分类权限 / 分类不存在
 
@@ -637,8 +655,9 @@ def batch_quote(items: list[QuoteItem], as_of: str = "") -> str:
 
     返回 JSON 字段：
     - as_of
-    - results: [{keyword, status, matched?, candidates?, groups?, hint?}]
+    - results: [{keyword, status, matched?, candidates?, by_unit?, samples?, total?, hint?}]
       价格对象：{product_id, name, brand, price, unit, quoted_at}
+      by_unit：[{unit, count, min, max, avg}]（overview 时按计价单位统计）
     - summary: 各 status 的计数 + total
     """
     db = SessionLocal()
@@ -659,7 +678,7 @@ def batch_quote(items: list[QuoteItem], as_of: str = "") -> str:
 
         items = items[:BATCH_MAX_ITEMS]
 
-        # 阶段 1：逐条搜索 + 权限过滤；ok/multi 候选的 Product 对象暂存，product_id 汇总待批量取价
+        # 阶段 1：逐条搜索 + 权限过滤；命中的候选一律暂存、汇总待批量取价（不再有"只问不报价"分支）
         plans: list[dict] = []
         price_pids: list[int] = []
         for item in items:
@@ -677,20 +696,13 @@ def batch_quote(items: list[QuoteItem], as_of: str = "") -> str:
 
             products = search_products_db(db, keyword, category_ids=category_ids, limit=BATCH_SEARCH_FETCH)
             products = _filter_brand_quality(products, item.brand, item.quality)
-            total = len(products)
 
-            if total == 0:
+            if not products:
                 plans.append({"keyword": keyword, "status": "not_found",
                               "hint": f"未找到包含'{keyword}'的商品"})
-            elif total > BATCH_CANDIDATES_PER_ITEM:
-                groups = group_products_for_clarify(products, max_groups=6)
-                plans.append({"keyword": keyword, "status": "ambiguous",
-                              "groups": [{"name": g["name"], "count": g["count"],
-                                          "sample_ids": g["sample_ids"]} for g in groups]})
             else:
-                cand = products[:BATCH_CANDIDATES_PER_ITEM]
-                price_pids.extend(p.product_id for p in cand)
-                plans.append({"keyword": keyword, "_products": cand})
+                price_pids.extend(p.product_id for p in products)
+                plans.append({"keyword": keyword, "total": len(products), "_products": products})
 
         # 阶段 2：所有候选一次性批量取价
         price_map = get_latest_prices_batch(db, price_pids, as_of_date=as_of_date) if price_pids else {}
@@ -702,7 +714,7 @@ def batch_quote(items: list[QuoteItem], as_of: str = "") -> str:
             return {"product_id": p.product_id, "name": p.product_name, "brand": p.brand or "",
                     "price": float(pr.price_value), "unit": pr.price_unit, "quoted_at": str(pr.price_date)}
 
-        # 阶段 3：回填价格并定 status（找到商品但无报价 → not_found）
+        # 阶段 3：回填价格并定 status（多款 → 列表 multi；很多 → 区间概览 overview；都给价）
         results: list[dict] = []
         for plan in plans:
             cand = plan.pop("_products", None)
@@ -715,8 +727,13 @@ def batch_quote(items: list[QuoteItem], as_of: str = "") -> str:
                                 "hint": "找到商品但近期无报价数据"})
             elif len(priced) == 1:
                 results.append({"keyword": plan["keyword"], "status": "ok", "matched": priced[0]})
-            else:
+            elif len(priced) <= BATCH_CANDIDATES_PER_ITEM:
                 results.append({"keyword": plan["keyword"], "status": "multi", "candidates": priced})
+            else:
+                cheapest = sorted(priced, key=lambda x: x["price"])[:BATCH_CANDIDATES_PER_ITEM]
+                results.append({"keyword": plan["keyword"], "status": "overview",
+                                "total": plan.get("total", len(priced)),
+                                "by_unit": _price_overview(priced), "samples": cheapest})
 
         summary: dict[str, int] = {"total": len(results)}
         for r in results:

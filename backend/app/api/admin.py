@@ -445,6 +445,8 @@ async def get_conversation_messages(
                 "role": msg.role,
                 "content": msg.content,
                 "thinking": msg.thinking,
+                "tool_trace": msg.tool_trace or [],
+                "is_rolled_back": msg.is_rolled_back,
                 "duration": msg.duration,
                 "prompt_tokens": msg.prompt_tokens or 0,
                 "completion_tokens": msg.completion_tokens or 0,

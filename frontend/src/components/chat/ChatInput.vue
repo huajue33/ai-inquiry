@@ -318,6 +318,7 @@ const TOOL_NAMES: Record<string, string> = {
   get_price_history: "查询价格趋势",
   get_price_ranking: "查询涨跌排行",
   get_category_price_summary: "汇总品类价格",
+  batch_quote: "批量询价",
   web_search: "搜索互联网",
   "分析问题": "分析问题并查询数据",
 }
@@ -452,7 +453,13 @@ function sendFromOutside(text: string) {
   handleSend()
 }
 
-defineExpose({ sendFromOutside })
+/** 仅把文本填入输入框，不自动发送（供"对话回滚"回填用） */
+function fillInput(text: string) {
+  if (voiceMode.value) voiceMode.value = false
+  inputText.value = text
+}
+
+defineExpose({ sendFromOutside, fillInput })
 </script>
 
 <style scoped>

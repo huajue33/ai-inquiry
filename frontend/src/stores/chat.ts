@@ -5,6 +5,7 @@ import {
   getConversations,
   getConversation,
   deleteConversation,
+  rollbackConversation,
   saveMessage,
   type ConversationItem,
 } from "../api/conversation"
@@ -169,7 +170,7 @@ export const useChatStore = defineStore("chat", () => {
     const id = convId || conversationId.value
     if (!id) return
     try {
-      await saveMessage({
+      const res = await saveMessage({
         conversation_id: id,
         role: msg.role,
         content: msg.content,
@@ -180,9 +181,35 @@ export const useChatStore = defineStore("chat", () => {
         completion_tokens: msg.completion_tokens || 0,
         total_tokens: msg.total_tokens || 0,
       })
+      // 写回真实 DB id，供"对话回滚"按 id 精确定位删除
+      if (res?.id) msg.dbId = res.id
     } catch {
       // ignore
     }
+  }
+
+  /**
+   * 回滚到某条消息：删除该消息及其之后的所有消息（后端 + 本地）。
+   * 返回被删消息的内容，供调用方回填输入框重新提问。
+   */
+  async function rollbackTo(message: ChatMessage, convId?: string): Promise<string> {
+    const id = convId || conversationId.value
+    if (!id) return ""
+    const state = getState(id)
+    const idx = state.messages.findIndex((m) => m.id === message.id)
+    if (idx < 0) return ""
+
+    const targetDbId = message.dbId ?? Number(message.id)
+    try {
+      if (Number.isInteger(targetDbId) && targetDbId < 1e12) {
+        await rollbackConversation(id, targetDbId)
+      }
+    } catch {
+      // 后端失败也继续本地截断，避免界面与操作不一致
+    }
+    const content = state.messages[idx].content
+    state.messages.splice(idx)
+    return content
   }
 
   // 以下操作都针对指定的对话（默认当前对话）
@@ -306,6 +333,7 @@ export const useChatStore = defineStore("chat", () => {
     addToolCall,
     completeToolCall,
     persistMessage,
+    rollbackTo,
     loadConversations,
     addLocalConversation,
     loadModels,

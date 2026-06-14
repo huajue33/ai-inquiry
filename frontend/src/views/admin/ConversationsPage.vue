@@ -78,10 +78,11 @@
     <el-drawer v-model="dialogVisible" title="对话详情" size="680px">
       <template #default>
         <div class="conv-messages">
-          <div v-for="msg in messages" :key="msg.id" :class="['conv-msg', msg.role]">
+          <div v-for="msg in messages" :key="msg.id" :class="['conv-msg', msg.role, { 'rolled-back': msg.is_rolled_back }]">
             <div class="conv-msg-header">
               <span class="conv-msg-role">{{ msg.role === 'user' ? '用户' : 'AI' }}</span>
               <span class="conv-msg-meta">
+                <el-tag v-if="msg.is_rolled_back" type="info" size="small" effect="plain">已回滚</el-tag>
                 <span v-if="msg.total_tokens" class="conv-msg-tokens">
                   入：{{ msg.prompt_tokens }} | 出：{{ msg.completion_tokens }} | 总：{{ msg.total_tokens }}
                 </span>
@@ -90,6 +91,30 @@
             </div>
             <div v-if="msg.role === 'assistant'" class="conv-msg-content markdown-body" v-html="renderMarkdown(msg.content)"></div>
             <div v-else class="conv-msg-content" v-html="highlightKeyword(msg.content)"></div>
+
+            <!-- Agent 执行流程：每次工具调用的入参与返回结果 -->
+            <div v-if="msg.role === 'assistant' && msg.tool_trace && msg.tool_trace.length" class="conv-trace">
+              <el-collapse>
+                <el-collapse-item :title="`Agent 执行流程（${msg.tool_trace.length} 次工具调用）`">
+                  <div v-for="(t, i) in msg.tool_trace" :key="i" class="trace-step">
+                    <div class="trace-step-head">
+                      <span class="trace-idx">{{ i + 1 }}</span>
+                      <span class="trace-tool">{{ t.tool }}</span>
+                      <el-tag :type="traceTagType(t.status)" size="small">{{ t.status || '-' }}</el-tag>
+                      <span v-if="t.duration_ms != null" class="trace-dur">{{ fmtMs(t.duration_ms) }}</span>
+                    </div>
+                    <div class="trace-block">
+                      <div class="trace-label">入参</div>
+                      <pre class="trace-pre">{{ pretty(t.args) }}</pre>
+                    </div>
+                    <div class="trace-block">
+                      <div class="trace-label">返回</div>
+                      <pre class="trace-pre">{{ pretty(t.result) }}</pre>
+                    </div>
+                  </div>
+                </el-collapse-item>
+              </el-collapse>
+            </div>
           </div>
         </div>
       </template>
@@ -135,6 +160,36 @@ onMounted(() => {
 function renderMarkdown(content: string): string {
   if (!content) return ""
   return md.render(content)
+}
+
+/** 美化展示入参/返回：字符串若是 JSON 则缩进格式化，否则原样 */
+function pretty(val: any): string {
+  if (val == null || val === "") return "（空）"
+  if (typeof val === "string") {
+    try {
+      return JSON.stringify(JSON.parse(val), null, 2)
+    } catch {
+      return val
+    }
+  }
+  try {
+    return JSON.stringify(val, null, 2)
+  } catch {
+    return String(val)
+  }
+}
+
+/** 按工具状态给 tag 配色 */
+function traceTagType(status: string): "success" | "info" | "danger" {
+  if (status && status.startsWith("error")) return "danger"
+  if (status === "empty") return "info"
+  return "success"
+}
+
+/** 毫秒耗时格式化：<1s 显示 ms，否则显示 s */
+function fmtMs(ms?: number): string {
+  if (ms == null) return ""
+  return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`
 }
 
 function highlightKeyword(text: string): string {
@@ -205,6 +260,11 @@ async function viewConversation(id: string) {
 .conv-msg.user { background: #ecf5ff; }
 .conv-msg.assistant { background: #f9fafb; }
 
+/* 已回滚消息：淡化展示，仍保留在审计记录中 */
+.conv-msg.rolled-back {
+  opacity: 0.55;
+}
+
 .conv-msg-header {
   display: flex;
   justify-content: space-between;
@@ -251,6 +311,85 @@ async function viewConversation(id: string) {
 
 .conv-msg.user .conv-msg-content {
   white-space: pre-wrap;
+}
+
+/* Agent 执行流程 */
+.conv-trace {
+  margin-top: 10px;
+}
+
+.conv-trace :deep(.el-collapse-item__header) {
+  font-size: 12px;
+  color: #909399;
+  height: 32px;
+  line-height: 32px;
+}
+
+.trace-step {
+  padding: 8px 0;
+  border-bottom: 1px dashed #ebeef5;
+}
+
+.trace-step:last-child {
+  border-bottom: none;
+}
+
+.trace-step-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.trace-idx {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #ecf5ff;
+  color: #409eff;
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
+.trace-tool {
+  font-size: 13px;
+  font-weight: 600;
+  color: #303133;
+}
+
+.trace-dur {
+  font-size: 11px;
+  color: #909399;
+  background: #f0f2f5;
+  padding: 1px 6px;
+  border-radius: 3px;
+}
+
+.trace-block {
+  margin: 4px 0;
+}
+
+.trace-label {
+  font-size: 11px;
+  color: #909399;
+  margin-bottom: 2px;
+}
+
+.trace-pre {
+  margin: 0;
+  padding: 8px 10px;
+  background: #f5f7fa;
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #303133;
+  max-height: 260px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 /* Search highlight */

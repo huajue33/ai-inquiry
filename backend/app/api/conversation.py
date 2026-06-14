@@ -58,6 +58,10 @@ class SaveMessageRequest(BaseModel):
     total_tokens: int = 0
 
 
+class RollbackRequest(BaseModel):
+    message_id: int
+
+
 async def _generate_title_background(conversation_id: str, user_message: str):
     """后台任务：用 LLM 生成标题并更新数据库。
 
@@ -140,7 +144,10 @@ async def get_conversation(
 
     messages = (
         db.query(ChatMessage)
-        .filter(ChatMessage.conversation_id == conversation_id)
+        .filter(
+            ChatMessage.conversation_id == conversation_id,
+            ChatMessage.is_rolled_back == 0,
+        )
         .order_by(ChatMessage.created_at)
         .all()
     )
@@ -200,6 +207,37 @@ async def delete_conversation(
     conv.is_deleted = 1
     db.commit()
     return {"ok": True}
+
+
+@router.post("/{conversation_id}/rollback")
+async def rollback_conversation(
+    conversation_id: str,
+    request: RollbackRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """回滚对话：把指定消息（含）及其之后的所有消息标记为已回滚（软删除），用于重新提问。
+
+    采用软删除而非物理删除：用户侧聊天与 Agent 上下文不再加载这些消息，但后台
+    统计（token 消耗）与对话审计记录仍完整保留。
+    """
+    conv = db.query(Conversation).filter(
+        Conversation.id == conversation_id,
+        Conversation.user_id == user.id,
+    ).first()
+    if not conv:
+        raise HTTPException(status_code=404, detail="对话不存在")
+
+    rolled_back = (
+        db.query(ChatMessage)
+        .filter(
+            ChatMessage.conversation_id == conversation_id,
+            ChatMessage.id >= request.message_id,
+        )
+        .update({ChatMessage.is_rolled_back: 1}, synchronize_session=False)
+    )
+    db.commit()
+    return {"ok": True, "rolled_back": rolled_back}
 
 
 @router.post("/message")

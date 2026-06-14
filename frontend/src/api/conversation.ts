@@ -42,6 +42,11 @@ export function deleteConversation(id: string): Promise<any> {
   return request.delete(`/conversations/${id}`)
 }
 
+/** 回滚对话：把指定消息（含）及其之后的消息标记为已回滚（软删除） */
+export function rollbackConversation(id: string, messageId: number): Promise<{ ok: boolean; rolled_back: number }> {
+  return request.post(`/conversations/${id}/rollback`, { message_id: messageId })
+}
+
 /** 将消息保存到指定对话中 */
 export function saveMessage(data: {
   conversation_id: string

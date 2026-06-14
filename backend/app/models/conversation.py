@@ -24,6 +24,10 @@ class ChatMessage(Base):
     content = Column(Text, nullable=False, default="")
     thinking = Column(Text)
     suggestions_json = Column(JSON)
+    # 工具调用执行轨迹：[{tool, args, result, status}]，供后台查看 Agent 执行流程
+    tool_trace = Column(JSON)
+    # 软删除标记：被回滚的消息置 1，用户侧/Agent 不再加载，但保留供后台统计与审计
+    is_rolled_back = Column(Integer, nullable=False, default=0)
     duration = Column(Integer)
     prompt_tokens = Column(Integer, default=0)
     completion_tokens = Column(Integer, default=0)

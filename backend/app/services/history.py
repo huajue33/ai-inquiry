@@ -45,7 +45,10 @@ def load_history(conversation_id: str) -> list[AIMessage | HumanMessage]:
     try:
         rows = (
             db.query(ChatMessageModel)
-            .filter(ChatMessageModel.conversation_id == conversation_id)
+            .filter(
+                ChatMessageModel.conversation_id == conversation_id,
+                ChatMessageModel.is_rolled_back == 0,
+            )
             .order_by(ChatMessageModel.created_at.desc())
             .limit(MAX_DB_MESSAGES)
             .all()

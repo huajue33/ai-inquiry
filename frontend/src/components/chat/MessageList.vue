@@ -50,8 +50,17 @@
       <div v-for="msg in chatStore.messages" :key="msg.id" :class="['message', msg.role]">
         <!-- 用户消息 -->
         <template v-if="msg.role === 'user'">
-          <div class="user-bubble">
-            <div class="message-content">{{ msg.content }}</div>
+          <div class="user-row">
+            <el-tooltip content="回滚到此处重新提问" placement="top">
+              <el-icon
+                class="rollback-btn"
+                :class="{ disabled: chatStore.loading }"
+                @click="handleRollback(msg)"
+              ><RefreshLeft /></el-icon>
+            </el-tooltip>
+            <div class="user-bubble">
+              <div class="message-content">{{ msg.content }}</div>
+            </div>
           </div>
         </template>
 
@@ -185,7 +194,8 @@
 <script setup lang="ts">
 import { ref, reactive, nextTick, watch, onUnmounted } from "vue"
 import MarkdownIt from "markdown-it"
-import { Loading, MagicStick, Select, TrendCharts, Search, DataAnalysis } from "@element-plus/icons-vue"
+import { Loading, MagicStick, Select, TrendCharts, Search, DataAnalysis, RefreshLeft } from "@element-plus/icons-vue"
+import { ElMessageBox } from "element-plus"
 import * as echarts from "echarts"
 import { useChatStore } from "../../stores/chat"
 import request from "../../api/request"
@@ -238,13 +248,30 @@ const md = new MarkdownIt({
   linkify: true,
 })
 
-defineEmits<{
+const emit = defineEmits<{
   quick: [question: string]
+  rollback: [content: string]
 }>()
 
 function isLastMessage(msg: ChatMessage): boolean {
   const msgs = chatStore.messages
   return msgs.length > 0 && msgs[msgs.length - 1].id === msg.id
+}
+
+/** 回滚到某条用户消息：删除它及之后的所有对话，并把内容回填到输入框 */
+async function handleRollback(msg: ChatMessage) {
+  if (chatStore.loading) return
+  try {
+    await ElMessageBox.confirm(
+      "将删除这条消息及其之后的所有对话内容，并把它放回输入框，确定回滚吗？",
+      "回滚对话",
+      { confirmButtonText: "回滚", cancelButtonText: "取消", type: "warning" }
+    )
+  } catch {
+    return
+  }
+  const content = await chatStore.rollbackTo(msg)
+  if (content) emit("rollback", content)
 }
 
 function toggleThinking(msgId: string) {
@@ -569,9 +596,39 @@ watch(() => chatStore.loading, () => { scrollToBottom() })
   justify-content: flex-end;
 }
 
+/* 用户消息行：回滚按钮 + 气泡 */
+.user-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 70%;
+}
+
+.rollback-btn {
+  font-size: 15px;
+  color: #c0c4cc;
+  cursor: pointer;
+  opacity: 0;
+  flex-shrink: 0;
+  transition: opacity 0.2s, color 0.2s;
+}
+
+.user-row:hover .rollback-btn {
+  opacity: 1;
+}
+
+.rollback-btn:hover {
+  color: #409eff;
+}
+
+.rollback-btn.disabled {
+  cursor: not-allowed;
+  opacity: 0;
+}
+
 /* User bubble */
 .user-bubble {
-  max-width: 70%;
+  max-width: 100%;
   padding: 10px 16px;
   background: #e8f4ff;
   color: #303133;

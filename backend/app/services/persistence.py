@@ -26,6 +26,7 @@ def save_assistant_message(
     suggestions: Optional[list] = None,
     duration_ms: Optional[int] = None,
     usage: Optional[dict] = None,
+    tool_trace: Optional[list] = None,
 ) -> None:
     """落库一条助手消息（同步，供流结束/断开时的清理阶段直接调用）。
 
@@ -64,6 +65,7 @@ def save_assistant_message(
             content=content or "",
             thinking=thinking or None,
             suggestions_json=suggestions or None,
+            tool_trace=tool_trace or None,
             duration=duration_ms,
             prompt_tokens=usage.get("prompt_tokens", 0),
             completion_tokens=usage.get("completion_tokens", 0),

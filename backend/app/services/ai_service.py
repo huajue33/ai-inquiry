@@ -24,6 +24,9 @@ logger = logging.getLogger(__name__)
 # Agent 图递归上限（兜底；工具层已对 search_products 限次，这里防其他失控）
 AGENT_RECURSION_LIMIT = 15
 
+# 每次工具调用结果存库时的单条上限（防止超大返回撑爆行；仅影响后台展示，不影响推理）
+TOOL_RESULT_MAX_CHARS = 20000
+
 # 每轮结束给前端的快捷建议（固定文案，多处复用）
 DEFAULT_SUGGESTIONS = ["查询今日蔬菜价格", "对比不同品牌食用油价格", "查看近7天鸡蛋价格趋势"]
 
@@ -95,7 +98,8 @@ def _log_trace(acc: dict, model: str, thinking: bool, duration_ms: int, outcome:
         user = current_user_var.get()
         tools = acc.get("tool_calls", [])
         tool_str = ", ".join(
-            f"{t['tool']}({str(t.get('args', {}))[:50]})->{t['status']}" for t in tools
+            f"{t['tool']}({str(t.get('args', {}))[:50]})->{t['status']}/{t.get('duration_ms', '?')}ms"
+            for t in tools
         ) or "-"
         usage = acc.get("usage", {})
         logger.info(
@@ -227,6 +231,7 @@ async def chat_stream(message: str, conversation_id: str, enable_thinking: bool 
                     suggestions=acc["suggestions"],
                     duration_ms=duration_ms,
                     usage=acc["usage"],
+                    tool_trace=acc.get("tool_calls"),
                 )
             except Exception as e:
                 logger.warning(f"流结束时持久化助手消息失败: {e}")
@@ -297,24 +302,33 @@ async def _stream(message: str, conversation_id: str, acc: dict, model: str, thi
                 "tool": tool_name,
                 "args": event.get("data", {}).get("input", {}),
                 "status": "?",
+                "_t0": time.monotonic(),
             })
             yield f"data: {json.dumps({'event': 'tool_start', 'data': tool_name}, ensure_ascii=False)}\n\n"
 
         elif kind == "on_tool_end":
             tool_name = event.get("name", "")
             output = event.get("data", {}).get("output")
+            out_str = ""
             if output is not None:
                 try:
-                    out_str = str(output)
+                    # ToolMessage 取 .content，其余直接 str()
+                    out_str = getattr(output, "content", None)
+                    if out_str is None:
+                        out_str = str(output)
                     last_tool_output = out_str[:600]
                     all_tool_outputs.append(out_str)
                 except Exception:
-                    pass
-            # 记录工具结果状态到轨迹（用于决策日志）
+                    out_str = ""
+            # 记录工具结果状态 + 完整返回（截断）到轨迹（用于决策日志 / 后台执行流程展示）
             status = _tool_outcome(output)
             for entry in reversed(acc.get("tool_calls", [])):
                 if entry["tool"] == tool_name and entry["status"] == "?":
                     entry["status"] = status
+                    entry["result"] = out_str[:TOOL_RESULT_MAX_CHARS]
+                    t0 = entry.pop("_t0", None)
+                    if t0 is not None:
+                        entry["duration_ms"] = int((time.monotonic() - t0) * 1000)
                     break
             if tool_name == "web_search":
                 acc["web_used"] = True
@@ -324,6 +338,10 @@ async def _stream(message: str, conversation_id: str, acc: dict, model: str, thi
         fallback = last_tool_output or "抱歉，没能从数据库找到匹配的结果。请尝试更具体的产品名或换个问法。"
         acc["content"] = acc.get("content", "") + fallback
         yield f"data: {json.dumps({'event': 'token', 'data': fallback}, ensure_ascii=False)}\n\n"
+
+    # 清理轨迹里可能残留的临时计时字段（无对应 tool_end 的调用）
+    for entry in acc.get("tool_calls", []):
+        entry.pop("_t0", None)
 
     # 剥离幻觉的 {#id=N} 标记（不在本轮工具结果/历史中的 ID）
     valid_ids = _collect_valid_ids(history, "\n".join(all_tool_outputs))

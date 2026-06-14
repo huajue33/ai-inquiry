@@ -6,6 +6,8 @@ export interface ToolCall {
 
 export interface ChatMessage {
   id: string
+  /** 后端持久化后的真实数据库 id（用于回滚定位；与 id 分开，避免改动 :key） */
+  dbId?: number
   role: "user" | "assistant"
   content: string
   thinking?: string
