@@ -180,7 +180,7 @@
           </el-radio-group>
         </div>
         <div ref="productChartRef" class="product-chart"></div>
-        <el-table :data="productPrices" stripe size="small" max-height="250">
+        <el-table :data="productPricesReversed" stripe size="small" max-height="250">
           <el-table-column prop="date" label="日期" min-width="110" />
           <el-table-column label="价格">
             <template #default="{ row }">¥{{ row.price }}/{{ row.unit }}</template>
@@ -192,7 +192,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, nextTick, watch, onUnmounted } from "vue"
+import { ref, reactive, nextTick, watch, onUnmounted, computed } from "vue"
 import MarkdownIt from "markdown-it"
 import { Loading, MagicStick, Select, TrendCharts, Search, DataAnalysis, RefreshLeft } from "@element-plus/icons-vue"
 import { ElMessageBox } from "element-plus"
@@ -213,6 +213,8 @@ const productDrawerName = ref("")
 const productDrawerId = ref(0)
 const productDays = ref(30)
 const productPrices = ref<any[]>([])
+// 表格倒序展示（最新日期在上）；趋势图仍用正序的 productPrices
+const productPricesReversed = computed(() => [...productPrices.value].reverse())
 const productInfo = ref<any>(null)
 const productChartRef = ref<HTMLElement>()
 let productChart: echarts.ECharts | null = null
