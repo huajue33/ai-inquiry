@@ -292,26 +292,36 @@ function renderMarkdown(content: string): string {
   // 先正常渲染 markdown
   let html = md.render(content)
 
-  // 在渲染后的 HTML 中处理 {#id=xxx} 标记（兼容模型偶发的双括号 {{#id=xxx}}）
-  // 标记可能出现在 <td>、<li>、<p> 等元素内部
-  // 匹配：一段文本 + {#id=数字}
+  // 把 {#id=N} 标记渲染成可点击产品名（兼容模型偶发的双括号 {{#id=N}}）。
+  const markerLink = (productId: string, inner: string) =>
+    `<span class="product-link" data-product-id="${productId}" title="点击查看价格详情">${inner}</span>`
+
+  // 情况一：商品名被行内强调标签包裹，如 <strong>大西瓜</strong>{#id=123}。
+  // 这种情况下标记前的纯文本为空，需先单独处理，否则会被情况二误删。
+  html = html.replace(
+    /<(strong|em|b|i)>([^<>]+?)<\/\1>\{{1,2}#id=(\d+)\}{1,2}/g,
+    (_m, tag, inner, productId) => `<${tag}>${markerLink(productId, inner.trim())}</${tag}>`,
+  )
+
+  // 情况二：商品名为紧贴标记的纯文本。
+  // 标记可能出现在 <td>、<li>、<p> 等元素内部。
   html = html.replace(
     /([^<>{}\n]*?)\{{1,2}#id=(\d+)\}{1,2}/g,
     (_match, textBefore, productId) => {
-      let name = textBefore.trim()
+      const name = textBefore.trim()
+      // 标记前无可用文本（已被情况一处理，或模型把标记单独放置）→ 仅移除标记，避免残留 {}
       if (!name) return ''
 
-      // 如果产品名中包含价格部分（" - 1.53元/斤"），分离出来
-      const priceMatch = name.match(/^(.+?)\s*[-–—]\s*([\d.]+元\/.+)$/)
+      // 如果产品名尾部带了价格（"大西瓜 - 1.53元/斤" / "大西瓜：1.53 元/斤"），分离出来，
+      // 只把商品名做成链接。分隔符兼容 - – — : ：，数字与"元"之间允许空格。
+      const priceMatch = name.match(/^(.+?)\s*[-–—:：]\s*([\d.]+\s*元\/.+)$/)
       if (priceMatch) {
-        const prodName = priceMatch[1].trim()
-        const priceText = priceMatch[2].trim()
-        return `<span class="product-link" data-product-id="${productId}" title="点击查看价格详情">${prodName}</span> - ${priceText}`
+        return `${markerLink(productId, priceMatch[1].trim())} - ${priceMatch[2].trim()}`
       }
 
       // 没有价格部分，整个作为链接
-      return `<span class="product-link" data-product-id="${productId}" title="点击查看价格详情">${name}</span>`
-    }
+      return markerLink(productId, name)
+    },
   )
 
   return html
